@@ -1,0 +1,35 @@
+# 02-rule-event-pattern: respond to AWS events instead of running on a schedule.
+#
+# eventPattern triggers the rule whenever an event matching the pattern lands
+# on the bus. Here: every S3 "Object Created" goes to a Step Functions state
+# machine.
+#
+# scheduleExpression and eventPattern are mutually exclusive on a single Rule.
+# Step Functions targets do require a roleArn (unlike Lambda).
+
+region: ap-northeast-1
+trackingId: examples-02
+
+rules:
+  - name: example-on-s3-upload
+    description: Process new S3 objects through Step Functions
+    eventPattern: |
+      {
+        "source": ["aws.s3"],
+        "detail-type": ["Object Created"],
+        "detail": {
+          "bucket": {
+            "name": ["my-uploads"]
+          }
+        }
+      }
+    state: ENABLED
+    targets:
+      - id: process
+        arn: arn:aws:states:ap-northeast-1:{{ must_env "AWS_ACCOUNT_ID" }}:stateMachine:ProcessUpload
+        roleArn: arn:aws:iam::{{ must_env "AWS_ACCOUNT_ID" }}:role/EventBridgeInvokeStepFunctions
+        retryPolicy:
+          maximumRetryAttempts: 2
+          maximumEventAgeInSeconds: 3600
+        deadLetterConfig:
+          arn: arn:aws:sqs:ap-northeast-1:{{ must_env "AWS_ACCOUNT_ID" }}:event-failures

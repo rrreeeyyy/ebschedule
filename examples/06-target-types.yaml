@@ -1,0 +1,91 @@
+# 06-target-types: variety pack of EventBridge Rule target shapes.
+#
+# Each rule below demonstrates one of the structured target parameter types
+# that became available in phase E. Most users will pick one or two of these
+# per repo, so feel free to mix and match.
+
+region: ap-northeast-1
+trackingId: examples-06
+tags:
+  Owner: examples
+
+rules:
+  # Kinesis Data Stream: PartitionKeyPath is a JSON path into the event payload.
+  - name: example-kinesis
+    eventPattern: '{"source": ["aws.s3"], "detail-type": ["Object Created"]}'
+    state: ENABLED
+    targets:
+      - id: kinesis
+        arn: arn:aws:kinesis:ap-northeast-1:{{ must_env "AWS_ACCOUNT_ID" }}:stream/events
+        roleArn: arn:aws:iam::{{ must_env "AWS_ACCOUNT_ID" }}:role/EventBridgeKinesisRole
+        kinesisParameters:
+          partitionKeyPath: $.detail.bucket.name
+
+  # SQS FIFO: messageGroupId required to preserve ordering per group.
+  - name: example-sqs-fifo
+    scheduleExpression: rate(10 minutes)
+    state: ENABLED
+    targets:
+      - id: fifo
+        arn: arn:aws:sqs:ap-northeast-1:{{ must_env "AWS_ACCOUNT_ID" }}:work.fifo
+        sqsParameters:
+          messageGroupId: schedules
+
+  # AWS Batch job: ArraySize / RetryAttempts map to nested SDK fields.
+  - name: example-batch
+    scheduleExpression: cron(0 4 * * ? *)
+    state: ENABLED
+    targets:
+      - id: batch
+        arn: arn:aws:batch:ap-northeast-1:{{ must_env "AWS_ACCOUNT_ID" }}:job-queue/main
+        roleArn: arn:aws:iam::{{ must_env "AWS_ACCOUNT_ID" }}:role/EventBridgeBatchRole
+        batchParameters:
+          jobDefinition: arn:aws:batch:ap-northeast-1:{{ must_env "AWS_ACCOUNT_ID" }}:job-definition/nightly:1
+          jobName: nightly-batch
+          arraySize: 5
+          retryAttempts: 2
+
+  # Redshift Data API: SQL statement against a Redshift cluster.
+  - name: example-redshift
+    scheduleExpression: cron(0 6 * * ? *)
+    state: ENABLED
+    targets:
+      - id: redshift
+        arn: arn:aws:redshift:ap-northeast-1:{{ must_env "AWS_ACCOUNT_ID" }}:cluster:analytics
+        roleArn: arn:aws:iam::{{ must_env "AWS_ACCOUNT_ID" }}:role/EventBridgeRedshiftRole
+        redshiftDataParameters:
+          database: warehouse
+          dbUser: etl
+          sql: "REFRESH MATERIALIZED VIEW daily_aggregates;"
+          statementName: refresh-daily-aggregates
+          withEvent: true
+
+  # SageMaker pipeline: PipelineParameterList is (Name, Value) pairs.
+  - name: example-sagemaker
+    scheduleExpression: cron(0 7 * * MON *)
+    state: ENABLED
+    targets:
+      - id: sagemaker
+        arn: arn:aws:sagemaker:ap-northeast-1:{{ must_env "AWS_ACCOUNT_ID" }}:pipeline/weekly-train
+        roleArn: arn:aws:iam::{{ must_env "AWS_ACCOUNT_ID" }}:role/EventBridgeSageMakerRole
+        sageMakerPipelineParameters:
+          pipelineParameterList:
+            - name: TrainingDate
+              value: auto
+            - name: ModelVersion
+              value: stable
+
+  # API Destination (HTTP endpoint): pass headers / path / query params.
+  - name: example-api-destination
+    eventPattern: '{"source": ["aws.events"]}'
+    state: ENABLED
+    targets:
+      - id: api
+        arn: arn:aws:events:ap-northeast-1:{{ must_env "AWS_ACCOUNT_ID" }}:api-destination/notify/notify-id
+        roleArn: arn:aws:iam::{{ must_env "AWS_ACCOUNT_ID" }}:role/EventBridgeApiDestinationRole
+        httpParameters:
+          headerParameters:
+            X-Source: ebschedule
+          pathParameterValues: [v1]
+          queryStringParameters:
+            verbose: "true"

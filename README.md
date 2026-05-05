@@ -162,6 +162,110 @@ ebschedule import-ecschedule -in ecschedule.yaml -account 123456789012 \
   emits a `{{ must_env "AWS_ACCOUNT_ID" }}` placeholder so a single
   config can be reused across accounts.
 
+## Worked examples
+
+The [`examples/`](./examples) directory has focused YAMLs for common
+shapes — Lambda / Step Functions / ECS RunTask / Kinesis / SQS FIFO /
+Batch / Redshift / SageMaker / API Destination, plus multi-group
+schedules and multi-file glob layouts. Each one passes `ebschedule
+validate` straight out of the box. See the
+[examples README](./examples/README.md) for the full index.
+
+## Walkthroughs
+
+### Migrating from ecschedule
+
+If you already maintain an `ecschedule.yaml` for ECS Scheduled Tasks,
+the converter emits a drop-in replacement:
+
+```sh
+ebschedule import-ecschedule \
+  -in path/to/ecschedule.yaml \
+  -account 123456789012 \
+  -tracking-id my-app \
+  > my-app.yaml
+
+ebschedule -conf my-app.yaml validate     # offline structural check
+ebschedule -conf my-app.yaml diff          # vs current AWS state
+ebschedule -conf my-app.yaml apply         # confirms before mutating
+```
+
+`-account` is optional; if omitted (and `AWS_ACCOUNT_ID` is unset), the
+converter emits `{{ must_env "AWS_ACCOUNT_ID" }}` so a single config
+runs across accounts. ECS RunTask `containerOverrides` are encoded into
+the EventBridge target's `input` JSON. See
+[examples/05-ecs-runtask.yaml](./examples/05-ecs-runtask.yaml) for the
+shape of the output.
+
+### Bootstrapping a config from an existing AWS account
+
+`dump` emits the YAML form of whatever it finds; combine with
+`-tag KEY=VALUE` to scope the bootstrap to resources you actually own:
+
+```sh
+# Pull every Rule tagged Service=my-app and Env=prod into a starter config:
+ebschedule -conf /dev/null \
+  -tag Service=my-app \
+  -tag Env=prod \
+  dump > my-app.yaml
+
+# Edit my-app.yaml as needed (most importantly: pick a trackingId), then
+# round-trip with diff to confirm there's nothing to change:
+$EDITOR my-app.yaml
+ebschedule -conf my-app.yaml diff && echo "in sync"
+```
+
+Multiple `-tag` flags are AND-matched. Schedules dump per-group as
+before; the `-tag` filter applies to Rules only.
+
+### CI: gate PRs on drift
+
+`diff` exits with code `2` when there's drift (terraform-plan style),
+`0` when clean, `1` on error. A typical pipeline step:
+
+```yaml
+# .github/workflows/check-drift.yml
+- run: ebschedule -conf 'config/*.yaml' diff
+```
+
+When `apply` is part of CI, pass `-auto-approve` (the interactive
+prompt is suppressed automatically when stdin isn't a TTY, but being
+explicit avoids surprises in shells that fake one):
+
+```yaml
+- run: ebschedule -conf 'config/*.yaml' -auto-approve apply
+```
+
+### Operating on a single resource
+
+`-target KIND:NAME` restricts both `diff` and `apply` to specific
+resources, useful for surgical rollouts:
+
+```sh
+ebschedule -conf my-app.yaml -target rule:nightly-batch diff
+ebschedule -conf my-app.yaml \
+  -target schedule:hourly-sync \
+  -target schedule:daily-sync \
+  apply
+```
+
+`-target` and `-prune` are mutually exclusive (partial-target +
+whole-config sweep would be incoherent). Naming a resource the config
+doesn't define errors out rather than silently skipping.
+
+### Splitting per-team or per-service
+
+When several teams share an account, give each team its own config file
+(and its own `trackingId`). Glob loads them all in one invocation but
+keeps the prune scope per-file:
+
+```sh
+ebschedule -conf 'config/*.yaml' apply -prune
+```
+
+See [examples/multi-file/](./examples/multi-file) for a worked layout
+(shared Rule + per-team schedule groups).
+
 ## Files
 
 - `main.go` — CLI dispatch, `Config`, template / SSM helpers, tag reconciliation
@@ -170,6 +274,7 @@ ebschedule import-ecschedule -in ecschedule.yaml -account 123456789012 \
 - `validate.go` — offline structural validation
 - `import.go` — ecschedule → ebschedule converter
 - `ebschedule.yaml` — example covering Rules + Schedules
+- `examples/` — focused per-feature configs (see [examples/README.md](./examples/README.md))
 
 ## Extend
 

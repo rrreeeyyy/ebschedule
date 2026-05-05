@@ -1,0 +1,22 @@
+# multi-file/01-team-a.yaml: team A's schedules in their own group.
+#
+# Each file is loaded as an independent Config: trackingId is per-file, so
+# `apply -prune` only touches each team's own schedule-group, never the
+# shared infra defined in 00-shared.yaml or other teams.
+
+region: ap-northeast-1
+trackingId: examples-team-a
+groupName: team-a
+tags:
+  Owner: team-a
+
+schedules:
+  - name: team-a-rollup
+    scheduleExpression: cron(0 1 * * ? *)
+    timezone: Asia/Tokyo
+    state: ENABLED
+    flexibleTimeWindow:
+      mode: OFF
+    target:
+      arn: arn:aws:lambda:ap-northeast-1:{{ must_env "AWS_ACCOUNT_ID" }}:function:team-a-rollup
+      roleArn: arn:aws:iam::{{ must_env "AWS_ACCOUNT_ID" }}:role/SchedulerInvokeLambda

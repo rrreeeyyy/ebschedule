@@ -1,0 +1,35 @@
+# 07-template-funcs: env / must_env / ssm template substitution.
+#
+# Config files run through text/template before YAML parsing. Three funcs:
+#   env        empty string if unset
+#   must_env   errors if unset (fall back to <env:NAME> placeholder under validate)
+#   ssm        AWS SSM Parameter Store, decrypted
+#
+# Use `must_env` for required cross-environment values like AWS_ACCOUNT_ID
+# and `ssm` for secrets you don't want committed.
+
+region: ap-northeast-1
+trackingId: examples-07
+# Optional 4th tag, blank if STAGE not exported. Useful for distinguishing
+# personal-sandbox vs staging vs prod from the same config.
+tags:
+  Owner: examples
+  Service: my-app
+  Stage: '{{ env "STAGE" }}'
+
+rules:
+  - name: example-template-rule
+    description: Demonstrates env / must_env / ssm
+    scheduleExpression: rate(1 hour)
+    state: ENABLED
+    targets:
+      - id: lambda
+        arn: arn:aws:lambda:ap-northeast-1:{{ must_env "AWS_ACCOUNT_ID" }}:function:my-app-runner
+        # SSM-backed secret materialized into the target input on apply.
+        # Under `validate`, this expands to `<ssm:/my-app/slack/token>` so
+        # validate works fully offline.
+        input: |
+          {
+            "slackToken": "{{ ssm "/my-app/slack/token" }}",
+            "stage": "{{ env "STAGE" }}"
+          }
