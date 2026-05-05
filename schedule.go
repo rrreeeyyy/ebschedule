@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
@@ -14,6 +15,8 @@ import (
 
 // --- types -----------------------------------------------------------------
 
+// Schedule has no per-item Tags field: EventBridge Scheduler exposes tags
+// only at the schedule-group level. Use Config.Tags (top-level) for tagging.
 type Schedule struct {
 	Name                       string              `yaml:"name"`
 	Description                string              `yaml:"description,omitempty"`
@@ -25,7 +28,6 @@ type Schedule struct {
 	KmsKeyArn                  string              `yaml:"kmsKeyArn,omitempty"`
 	ActionAfterCompletion      string              `yaml:"actionAfterCompletion,omitempty"` // NONE | DELETE
 	FlexibleTimeWindow         *FlexibleTimeWindow `yaml:"flexibleTimeWindow,omitempty"`
-	Tags                       map[string]string   `yaml:"tags,omitempty"`
 	Target                     *ScheduleTarget     `yaml:"target"`
 }
 
@@ -102,16 +104,7 @@ func dumpSchedules(ctx context.Context, region, group, prefix string) ([]*Schedu
 			if err != nil {
 				return nil, err
 			}
-			sched := fromRemoteSchedule(full)
-			tags, err := listSchedTags(ctx, cli, *full.Arn)
-			if err != nil {
-				return nil, err
-			}
-			delete(tags, trackingTagKey)
-			if len(tags) > 0 {
-				sched.Tags = tags
-			}
-			out = append(out, sched)
+			out = append(out, fromRemoteSchedule(full))
 		}
 		if resp.NextToken == nil {
 			break
@@ -187,9 +180,19 @@ func fromRemoteSchedTarget(t *schtypes.Target) *ScheduleTarget {
 	return st
 }
 
-func listSchedTags(ctx context.Context, cli *scheduler.Client, arn string) (map[string]string, error) {
+// EventBridge Scheduler exposes tags only at the schedule-group level (the
+// TagResource API rejects per-schedule ARNs). All ebschedule tracking
+// therefore lives on the group; ownership is decided per-group, not
+// per-schedule.
+func listGroupTags(ctx context.Context, cli *scheduler.Client, group string) (map[string]string, error) {
+	gg, err := cli.GetScheduleGroup(ctx, &scheduler.GetScheduleGroupInput{
+		Name: aws.String(group),
+	})
+	if err != nil {
+		return nil, err
+	}
 	resp, err := cli.ListTagsForResource(ctx, &scheduler.ListTagsForResourceInput{
-		ResourceArn: aws.String(arn),
+		ResourceArn: gg.Arn,
 	})
 	if err != nil {
 		return nil, err
@@ -213,9 +216,7 @@ func diffSchedules(ctx context.Context, cfg *Config) error {
 		cur[s.Name] = s
 	}
 	for _, want := range cfg.Schedules {
-		desired := *want
-		desired.Tags = mergeTags(cfg.Tags, want.Tags)
-		desiredYAML := mustYAML(&desired)
+		desiredYAML := mustYAML(want)
 		got, ok := cur[want.Name]
 		if !ok {
 			fmt.Print(unifiedDiff("schedule:"+want.Name, "", desiredYAML))
@@ -244,7 +245,7 @@ func applySchedules(ctx context.Context, cfg *Config, dryRun, prune bool) error 
 	desired := map[string]bool{}
 	for _, s := range cfg.Schedules {
 		desired[s.Name] = true
-		if err := applyOneSchedule(ctx, cli, group, cfg, s, dryRun); err != nil {
+		if err := applyOneSchedule(ctx, cli, group, s, dryRun); err != nil {
 			return fmt.Errorf("schedule %s: %w", s.Name, err)
 		}
 	}
@@ -254,19 +255,20 @@ func applySchedules(ctx context.Context, cfg *Config, dryRun, prune bool) error 
 	if cfg.TrackingID == "" {
 		return fmt.Errorf("-prune requires trackingId in config (safety guard)")
 	}
+	tracked, err := isGroupTracked(ctx, cli, group, cfg.TrackingID)
+	if err != nil {
+		return err
+	}
+	if !tracked {
+		fmt.Fprintf(os.Stderr, "warning: schedule-group:%s lacks ebschedule-tracking-id=%s; skipping prune\n", group, cfg.TrackingID)
+		return nil
+	}
 	current, err := dumpSchedules(ctx, cfg.Region, group, "")
 	if err != nil {
 		return err
 	}
 	for _, s := range current {
 		if desired[s.Name] {
-			continue
-		}
-		tracked, err := isSchedTracked(ctx, cli, group, s.Name, cfg.TrackingID)
-		if err != nil {
-			return err
-		}
-		if !tracked {
 			continue
 		}
 		fmt.Printf("- schedule:%s (delete)\n", s.Name)
@@ -323,7 +325,7 @@ func ensureScheduleGroup(ctx context.Context, cli *scheduler.Client, group strin
 	return err
 }
 
-func applyOneSchedule(ctx context.Context, cli *scheduler.Client, group string, cfg *Config, s *Schedule, dryRun bool) error {
+func applyOneSchedule(ctx context.Context, cli *scheduler.Client, group string, s *Schedule, dryRun bool) error {
 	fmt.Printf("+ schedule:%s (apply)\n", s.Name)
 	if dryRun {
 		return nil
@@ -394,39 +396,7 @@ func applyOneSchedule(ctx context.Context, cli *scheduler.Client, group string, 
 			Target:                     target,
 		})
 	}
-	if err != nil {
-		return err
-	}
-
-	// Reconcile tags (Create/Update do not accept Tags).
-	desc, err := cli.GetSchedule(ctx, &scheduler.GetScheduleInput{
-		GroupName: aws.String(group), Name: aws.String(s.Name),
-	})
-	if err != nil {
-		return err
-	}
-	current, err := listSchedTags(ctx, cli, *desc.Arn)
-	if err != nil {
-		return err
-	}
-	desired := mergeTags(cfg.Tags, s.Tags)
-	setFn := func(tags map[string]string) error {
-		awsTags := make([]schtypes.Tag, 0, len(tags))
-		for k, v := range tags {
-			awsTags = append(awsTags, schtypes.Tag{Key: aws.String(k), Value: aws.String(v)})
-		}
-		_, err := cli.TagResource(ctx, &scheduler.TagResourceInput{
-			ResourceArn: desc.Arn, Tags: awsTags,
-		})
-		return err
-	}
-	unsetFn := func(keys []string) error {
-		_, err := cli.UntagResource(ctx, &scheduler.UntagResourceInput{
-			ResourceArn: desc.Arn, TagKeys: keys,
-		})
-		return err
-	}
-	return reconcileTags(current, desired, cfg.TrackingID, setFn, unsetFn)
+	return err
 }
 
 func toAWSSchedTarget(t *ScheduleTarget) (*schtypes.Target, error) {
@@ -485,14 +455,12 @@ func toAWSSchedTarget(t *ScheduleTarget) (*schtypes.Target, error) {
 	return at, nil
 }
 
-func isSchedTracked(ctx context.Context, cli *scheduler.Client, group, name, trackingID string) (bool, error) {
-	desc, err := cli.GetSchedule(ctx, &scheduler.GetScheduleInput{
-		GroupName: aws.String(group), Name: aws.String(name),
-	})
-	if err != nil {
-		return false, err
-	}
-	tags, err := listSchedTags(ctx, cli, *desc.Arn)
+// isGroupTracked reports whether the given schedule group carries our
+// tracking tag. -prune for schedules is gated on group ownership: if the
+// group isn't ours, we never delete schedules in it (safety for groups
+// shared with Terraform/CDK).
+func isGroupTracked(ctx context.Context, cli *scheduler.Client, group, trackingID string) (bool, error) {
+	tags, err := listGroupTags(ctx, cli, group)
 	if err != nil {
 		return false, err
 	}
