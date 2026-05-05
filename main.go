@@ -241,7 +241,9 @@ func loadConfigsWithFuncs(pattern string, funcs template.FuncMap) ([]*Config, er
 	out := make([]*Config, 0, len(files))
 	for _, f := range files {
 		var c Config
-		if err := yaml.Unmarshal(f.data, &c); err != nil {
+		dec := yaml.NewDecoder(bytes.NewReader(f.data))
+		dec.KnownFields(true)
+		if err := dec.Decode(&c); err != nil {
 			return nil, fmt.Errorf("%s: %w", f.path, err)
 		}
 		c.sourcePath = f.path
