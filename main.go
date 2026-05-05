@@ -125,6 +125,108 @@ type SageMakerPipelineParameter struct {
 
 // --- main ------------------------------------------------------------------
 
+// targetFlag implements flag.Value for repeatable `-target KIND:NAME`.
+// KIND must be "rule" or "schedule"; the explicit prefix lets a Rule and
+// a Schedule with the same name coexist unambiguously.
+type targetFlag struct {
+	rules     map[string]bool
+	schedules map[string]bool
+}
+
+func (t *targetFlag) String() string {
+	if t == nil {
+		return ""
+	}
+	parts := make([]string, 0, len(t.rules)+len(t.schedules))
+	for n := range t.rules {
+		parts = append(parts, "rule:"+n)
+	}
+	for n := range t.schedules {
+		parts = append(parts, "schedule:"+n)
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ",")
+}
+
+func (t *targetFlag) Set(v string) error {
+	kind, name, ok := strings.Cut(v, ":")
+	if !ok || name == "" {
+		return fmt.Errorf("-target must be KIND:NAME (e.g. rule:my-rule), got %q", v)
+	}
+	switch kind {
+	case "rule":
+		if t.rules == nil {
+			t.rules = map[string]bool{}
+		}
+		t.rules[name] = true
+	case "schedule":
+		if t.schedules == nil {
+			t.schedules = map[string]bool{}
+		}
+		t.schedules[name] = true
+	default:
+		return fmt.Errorf("-target kind must be 'rule' or 'schedule', got %q", kind)
+	}
+	return nil
+}
+
+// active reports whether at least one -target was set.
+func (t *targetFlag) active() bool {
+	return t != nil && (len(t.rules) > 0 || len(t.schedules) > 0)
+}
+
+// filter returns a copy of cfg restricted to only the targeted resources.
+// Sections not referenced by any target are nil'd so callers don't touch
+// them at all (no apply, no prune-eligible scan).
+//
+// Returns an error if a -target names a resource the config doesn't define;
+// silent skip would mask typos.
+func (t *targetFlag) filter(cfg *Config) (*Config, error) {
+	if !t.active() {
+		return cfg, nil
+	}
+	out := *cfg
+
+	if len(t.rules) > 0 {
+		seen := map[string]bool{}
+		var rules []*Rule
+		for _, r := range cfg.Rules {
+			if t.rules[r.Name] {
+				rules = append(rules, r)
+				seen[r.Name] = true
+			}
+		}
+		for n := range t.rules {
+			if !seen[n] {
+				return nil, fmt.Errorf("-target rule:%s not found in config", n)
+			}
+		}
+		out.Rules = rules
+	} else {
+		out.Rules = nil // no rule targets => skip Rules entirely
+	}
+
+	if len(t.schedules) > 0 {
+		seen := map[string]bool{}
+		var scheds []*Schedule
+		for _, s := range cfg.Schedules {
+			if t.schedules[s.Name] {
+				scheds = append(scheds, s)
+				seen[s.Name] = true
+			}
+		}
+		for n := range t.schedules {
+			if !seen[n] {
+				return nil, fmt.Errorf("-target schedule:%s not found in config", n)
+			}
+		}
+		out.Schedules = scheds
+	} else {
+		out.Schedules = nil
+	}
+	return &out, nil
+}
+
 // tagFilterFlag implements flag.Value for repeatable `-tag KEY=VALUE`. The
 // resulting map is AND-matched against each remote resource's tag set.
 type tagFilterFlag map[string]string
@@ -161,6 +263,7 @@ func main() {
 		showVersion bool
 		dumpTags    tagFilterFlag
 		autoApprove bool
+		targets     targetFlag
 	)
 	flag.StringVar(&confPath, "conf", "ebschedule.yaml", "config file or glob (e.g. 'config/*.yaml')")
 	flag.BoolVar(&dryRun, "dry-run", false, "do not actually apply")
@@ -168,9 +271,10 @@ func main() {
 	flag.BoolVar(&showVersion, "version", false, "print version and exit")
 	flag.Var(&dumpTags, "tag", "(dump) only emit Rules with this tag; repeatable; AND across all (KEY=VALUE)")
 	flag.BoolVar(&autoApprove, "auto-approve", false, "(apply) skip the interactive confirmation prompt")
+	flag.Var(&targets, "target", "(diff/apply) restrict to KIND:NAME (rule:foo or schedule:bar); repeatable")
 	flag.Usage = func() {
 		fmt.Fprintln(os.Stderr, `usage:
-  ebschedule [-conf FILE_OR_GLOB] [-dry-run] [-prune] [-auto-approve] <dump|diff|apply|validate> [name-prefix]
+  ebschedule [-conf FILE_OR_GLOB] [-dry-run] [-prune] [-auto-approve] [-target KIND:NAME]... <dump|diff|apply|validate> [name-prefix]
   ebschedule [-conf FILE_OR_GLOB] [-tag KEY=VALUE]... dump [name-prefix]
   ebschedule import-ecschedule [-in FILE] [-account NUM] [-region REGION] [-tracking-id ID]
   ebschedule -version
@@ -211,16 +315,18 @@ Exit codes:
 		check(err)
 		drift := false
 		for _, cfg := range cfgs {
+			scoped, err := targets.filter(cfg)
+			check(err)
 			if len(cfgs) > 1 {
-				fmt.Fprintf(out, "# %s\n", cfg.sourcePath)
+				fmt.Fprintf(out, "# %s\n", scoped.sourcePath)
 			}
-			if cfg.Rules != nil {
-				d, err := diffRules(ctx, out, cfg)
+			if scoped.Rules != nil {
+				d, err := diffRules(ctx, out, scoped)
 				check(err)
 				drift = drift || d
 			}
-			if cfg.Schedules != nil {
-				d, err := diffSchedules(ctx, out, cfg)
+			if scoped.Schedules != nil {
+				d, err := diffSchedules(ctx, out, scoped)
 				check(err)
 				drift = drift || d
 			}
@@ -229,6 +335,9 @@ Exit codes:
 			os.Exit(exitDrift)
 		}
 	case "apply":
+		if targets.active() && prune {
+			check(fmt.Errorf("-target and -prune are mutually exclusive"))
+		}
 		cfgs, err := loadConfigs(confPath)
 		check(err)
 		if !dryRun && !autoApprove && stdinIsTTY() {
@@ -238,14 +347,16 @@ Exit codes:
 			}
 		}
 		for _, cfg := range cfgs {
+			scoped, err := targets.filter(cfg)
+			check(err)
 			if len(cfgs) > 1 {
-				fmt.Fprintf(out, "# %s\n", cfg.sourcePath)
+				fmt.Fprintf(out, "# %s\n", scoped.sourcePath)
 			}
-			if cfg.Rules != nil {
-				check(applyRules(ctx, out, cfg, dryRun, prune))
+			if scoped.Rules != nil {
+				check(applyRules(ctx, out, scoped, dryRun, prune))
 			}
-			if cfg.Schedules != nil {
-				check(applySchedules(ctx, out, cfg, dryRun, prune))
+			if scoped.Schedules != nil {
+				check(applySchedules(ctx, out, scoped, dryRun, prune))
 			}
 		}
 	case "validate":
