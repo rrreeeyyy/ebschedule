@@ -11,6 +11,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -18,8 +19,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sort"
+	"strings"
+	"syscall"
 	"text/template"
 	"time"
 
@@ -27,6 +31,7 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/pmezard/go-difflib/difflib"
+	"golang.org/x/term"
 	"gopkg.in/yaml.v3"
 )
 
@@ -101,20 +106,53 @@ type DeadLetterConfig struct {
 
 // --- main ------------------------------------------------------------------
 
+// tagFilterFlag implements flag.Value for repeatable `-tag KEY=VALUE`. The
+// resulting map is AND-matched against each remote resource's tag set.
+type tagFilterFlag map[string]string
+
+func (t *tagFilterFlag) String() string {
+	if t == nil || *t == nil {
+		return ""
+	}
+	parts := make([]string, 0, len(*t))
+	for k, v := range *t {
+		parts = append(parts, k+"="+v)
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ",")
+}
+
+func (t *tagFilterFlag) Set(v string) error {
+	k, val, ok := strings.Cut(v, "=")
+	if !ok || k == "" {
+		return fmt.Errorf("-tag must be KEY=VALUE, got %q", v)
+	}
+	if *t == nil {
+		*t = tagFilterFlag{}
+	}
+	(*t)[k] = val
+	return nil
+}
+
 func main() {
 	var (
 		confPath    string
 		dryRun      bool
 		prune       bool
 		showVersion bool
+		dumpTags    tagFilterFlag
+		autoApprove bool
 	)
 	flag.StringVar(&confPath, "conf", "ebschedule.yaml", "config file or glob (e.g. 'config/*.yaml')")
 	flag.BoolVar(&dryRun, "dry-run", false, "do not actually apply")
 	flag.BoolVar(&prune, "prune", false, "delete tracked resources absent from config")
 	flag.BoolVar(&showVersion, "version", false, "print version and exit")
+	flag.Var(&dumpTags, "tag", "(dump) only emit Rules with this tag; repeatable; AND across all (KEY=VALUE)")
+	flag.BoolVar(&autoApprove, "auto-approve", false, "(apply) skip the interactive confirmation prompt")
 	flag.Usage = func() {
 		fmt.Fprintln(os.Stderr, `usage:
-  ebschedule [-conf FILE_OR_GLOB] [-dry-run] [-prune] <dump|diff|apply|validate> [name-prefix]
+  ebschedule [-conf FILE_OR_GLOB] [-dry-run] [-prune] [-auto-approve] <dump|diff|apply|validate> [name-prefix]
+  ebschedule [-conf FILE_OR_GLOB] [-tag KEY=VALUE]... dump [name-prefix]
   ebschedule import-ecschedule [-in FILE] [-account NUM] [-region REGION] [-tracking-id ID]
   ebschedule -version
 
@@ -139,7 +177,8 @@ Exit codes:
 		flag.Usage()
 		os.Exit(exitErr)
 	}
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	out := os.Stdout
 	switch args[0] {
 	case "dump":
@@ -147,7 +186,7 @@ Exit codes:
 		if len(args) > 1 {
 			prefix = args[1]
 		}
-		check(runDump(ctx, out, confPath, prefix))
+		check(runDump(ctx, out, confPath, prefix, dumpTags))
 	case "diff":
 		cfgs, err := loadConfigs(confPath)
 		check(err)
@@ -173,6 +212,12 @@ Exit codes:
 	case "apply":
 		cfgs, err := loadConfigs(confPath)
 		check(err)
+		if !dryRun && !autoApprove && stdinIsTTY() {
+			if !confirmApply(os.Stderr, os.Stdin) {
+				fmt.Fprintln(os.Stderr, "aborted")
+				os.Exit(exitErr)
+			}
+		}
 		for _, cfg := range cfgs {
 			if len(cfgs) > 1 {
 				fmt.Fprintf(out, "# %s\n", cfg.sourcePath)
@@ -196,6 +241,26 @@ Exit codes:
 	}
 }
 
+// stdinIsTTY reports whether stdin is attached to a real terminal. Non-TTY
+// (CI / piped / `< /dev/null`) skips the interactive apply confirmation by
+// default. Uses golang.org/x/term so /dev/null isn't misclassified as a
+// terminal (it is a character device).
+func stdinIsTTY() bool {
+	return term.IsTerminal(int(os.Stdin.Fd()))
+}
+
+// confirmApply prompts on prompt and reads a line from in. Only the literal
+// "yes" (after trim) confirms; everything else aborts. Stricter than y/Y to
+// guard against accidental confirmations on dangerous applies.
+func confirmApply(prompt io.Writer, in io.Reader) bool {
+	fmt.Fprint(prompt, "ebschedule will modify AWS resources. Run `diff` first to preview.\nApply changes? Type 'yes' to continue: ")
+	scanner := bufio.NewScanner(in)
+	if !scanner.Scan() {
+		return false
+	}
+	return strings.TrimSpace(scanner.Text()) == "yes"
+}
+
 func check(err error) {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -209,7 +274,13 @@ func check(err error) {
 // If confPath does not exist (the bootstrap case), runDump falls through
 // using AWS defaults. Other load errors (parse / template / strict YAML)
 // are surfaced so typos can't be silently swallowed.
-func runDump(ctx context.Context, out io.Writer, confPath, prefix string) error {
+//
+// tagFilter, when non-empty, restricts the dumped Rules to those carrying
+// every listed tag; useful for bootstrapping a config out of an account
+// that holds rules from multiple stacks (e.g. -tag Service=my-app). The
+// filter does not currently apply to Schedules (those scope is already
+// per-group, a config-level decision).
+func runDump(ctx context.Context, out io.Writer, confPath, prefix string, tagFilter map[string]string) error {
 	region, bus, group := "", "default", "default"
 	cfgs, err := loadConfigs(confPath)
 	if err != nil && !errors.Is(err, errNoConfigFiles) {
@@ -231,7 +302,7 @@ func runDump(ctx context.Context, out io.Writer, confPath, prefix string) error 
 	if group != "default" {
 		dumped.GroupName = group
 	}
-	rules, err := dumpRules(ctx, region, bus, prefix)
+	rules, err := dumpRulesFiltered(ctx, region, bus, prefix, tagFilter)
 	if err != nil {
 		return fmt.Errorf("dump rules: %w", err)
 	}
@@ -291,6 +362,12 @@ func loadConfigsWithFuncs(pattern string, funcs template.FuncMap) ([]*Config, er
 	}
 	out := make([]*Config, 0, len(files))
 	for _, f := range files {
+		// Empty file (e.g. -conf /dev/null) is treated as "no config" rather
+		// than a parse error: lets `dump` run against AWS defaults without
+		// implicitly picking up ebschedule.yaml in cwd.
+		if len(bytes.TrimSpace(f.data)) == 0 {
+			continue
+		}
 		var c Config
 		dec := yaml.NewDecoder(bytes.NewReader(f.data))
 		dec.KnownFields(true)

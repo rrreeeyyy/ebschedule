@@ -361,6 +361,150 @@ func (f *fakeSched) UntagResource(_ context.Context, _ *scheduler.UntagResourceI
 	return nil, errors.New("Scheduler.UntagResource should not be called per-schedule")
 }
 
+// --- dump filter tests -----------------------------------------------------
+
+func TestDumpRulesWith_TagFilter(t *testing.T) {
+	f := newFakeEB()
+	f.addRule("svc-a-prod", map[string]string{"Service": "a", "Env": "prod"}, "tgt")
+	f.addRule("svc-a-stg", map[string]string{"Service": "a", "Env": "stg"}, "tgt")
+	f.addRule("svc-b-prod", map[string]string{"Service": "b", "Env": "prod"}, "tgt")
+	f.addRule("untagged", nil, "tgt")
+
+	t.Run("nil filter returns everything", func(t *testing.T) {
+		got, err := dumpRulesWith(context.Background(), f, "default", "", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 4 {
+			t.Errorf("len = %d, want 4", len(got))
+		}
+	})
+
+	t.Run("single tag filter", func(t *testing.T) {
+		got, err := dumpRulesWith(context.Background(), f, "default", "",
+			map[string]string{"Service": "a"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		names := []string{}
+		for _, r := range got {
+			names = append(names, r.Name)
+		}
+		sort.Strings(names)
+		if !reflect.DeepEqual(names, []string{"svc-a-prod", "svc-a-stg"}) {
+			t.Errorf("got %v, want [svc-a-prod svc-a-stg]", names)
+		}
+	})
+
+	t.Run("multi-tag AND filter", func(t *testing.T) {
+		got, err := dumpRulesWith(context.Background(), f, "default", "",
+			map[string]string{"Service": "a", "Env": "prod"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 1 || got[0].Name != "svc-a-prod" {
+			t.Errorf("got %v, want [svc-a-prod] only", got)
+		}
+	})
+
+	t.Run("filter against tracking tag works too", func(t *testing.T) {
+		// tag:ebschedule-tracking-id=ID is a valid use case and the tracking
+		// tag must still be visible to the filter, even though it gets
+		// stripped from the emitted Tags afterwards.
+		f := newFakeEB()
+		f.addRule("mine", map[string]string{trackingTagKey: "my-app"}, "tgt")
+		f.addRule("other", map[string]string{trackingTagKey: "different"}, "tgt")
+		got, err := dumpRulesWith(context.Background(), f, "default", "",
+			map[string]string{trackingTagKey: "my-app"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 1 || got[0].Name != "mine" {
+			t.Errorf("got %v, want [mine] only", got)
+		}
+		if got[0].Tags[trackingTagKey] != "" {
+			t.Errorf("tracking tag should be stripped from emitted Tags, got %v", got[0].Tags)
+		}
+	})
+
+	t.Run("no match yields empty", func(t *testing.T) {
+		got, err := dumpRulesWith(context.Background(), f, "default", "",
+			map[string]string{"Service": "z"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 0 {
+			t.Errorf("got %d, want 0", len(got))
+		}
+	})
+}
+
+func TestTagFilterFlag(t *testing.T) {
+	t.Run("repeatable parses multiple tags", func(t *testing.T) {
+		var f tagFilterFlag
+		if err := f.Set("Service=a"); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.Set("Env=prod"); err != nil {
+			t.Fatal(err)
+		}
+		if f["Service"] != "a" || f["Env"] != "prod" {
+			t.Errorf("got %v", f)
+		}
+	})
+	t.Run("rejects values without =", func(t *testing.T) {
+		var f tagFilterFlag
+		if err := f.Set("notapair"); err == nil {
+			t.Error("expected error for missing '='")
+		}
+	})
+	t.Run("rejects empty key", func(t *testing.T) {
+		var f tagFilterFlag
+		if err := f.Set("=value"); err == nil {
+			t.Error("expected error for empty key")
+		}
+	})
+	t.Run("empty value is allowed", func(t *testing.T) {
+		var f tagFilterFlag
+		if err := f.Set("Key="); err != nil {
+			t.Fatalf("Key= should be valid: %v", err)
+		}
+		if f["Key"] != "" {
+			t.Errorf("got %q, want empty", f["Key"])
+		}
+	})
+}
+
+// --- confirmApply tests ----------------------------------------------------
+
+func TestConfirmApply(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{"yes lowercase", "yes\n", true},
+		{"yes with whitespace", "  yes  \n", true},
+		{"y is not enough", "y\n", false},
+		{"no", "no\n", false},
+		{"empty line", "\n", false},
+		{"YES uppercase rejected (intentional strict match)", "YES\n", false},
+		{"eof returns false", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var prompt bytes.Buffer
+			got := confirmApply(&prompt, strings.NewReader(tc.in))
+			if got != tc.want {
+				t.Errorf("confirmApply(%q) = %v, want %v", tc.in, got, tc.want)
+			}
+			if !strings.Contains(prompt.String(), "Type 'yes' to continue") {
+				t.Errorf("prompt missing expected text: %q", prompt.String())
+			}
+		})
+	}
+}
+
 // --- Schedule prune tests --------------------------------------------------
 
 func captureStderr(t *testing.T, fn func()) string {
