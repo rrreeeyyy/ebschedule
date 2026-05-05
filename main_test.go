@@ -2,11 +2,79 @@ package main
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 )
+
+func writeTempYAML(t *testing.T, body string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "conf.yaml")
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestLoadConfigs_StrictUnknownField(t *testing.T) {
+	t.Run("unknown top-level field rejected", func(t *testing.T) {
+		p := writeTempYAML(t, `
+region: ap-northeast-1
+tag:
+  Service: app
+rules:
+  - name: x
+    scheduleExpression: rate(1 hour)
+    targets:
+      - id: t
+        arn: arn:aws:lambda:us-east-1:1:function:f
+`)
+		_, err := loadConfigs(p)
+		if err == nil {
+			t.Fatal("expected error for unknown field, got nil")
+		}
+		if !strings.Contains(err.Error(), "field tag not found") {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+	t.Run("unknown nested field rejected", func(t *testing.T) {
+		p := writeTempYAML(t, `
+region: ap-northeast-1
+rules:
+  - name: x
+    scheduleExpresion: rate(1 hour)  # typo: missing 's'
+    targets:
+      - id: t
+        arn: arn:aws:lambda:us-east-1:1:function:f
+`)
+		_, err := loadConfigs(p)
+		if err == nil {
+			t.Fatal("expected error for typo'd field, got nil")
+		}
+	})
+	t.Run("happy path still loads", func(t *testing.T) {
+		p := writeTempYAML(t, `
+region: ap-northeast-1
+rules:
+  - name: x
+    scheduleExpression: rate(1 hour)
+    targets:
+      - id: t
+        arn: arn:aws:lambda:us-east-1:1:function:f
+`)
+		cfgs, err := loadConfigs(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(cfgs) != 1 || len(cfgs[0].Rules) != 1 {
+			t.Errorf("unexpected cfgs: %+v", cfgs)
+		}
+	})
+}
 
 func TestConfigBusGroup(t *testing.T) {
 	c := &Config{}
