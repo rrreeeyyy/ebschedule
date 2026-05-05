@@ -141,6 +141,36 @@ func validateRule(r *Rule, path string) []string {
 				errs = append(errs, fmt.Sprintf("%s.ecsParameters.assignPublicIp: must be ENABLED or DISABLED", tp))
 			}
 		}
+		if t.KinesisParameters != nil && t.KinesisParameters.PartitionKeyPath == "" {
+			errs = append(errs, fmt.Sprintf("%s.kinesisParameters.partitionKeyPath: is required", tp))
+		}
+		if t.BatchParameters != nil {
+			if t.BatchParameters.JobDefinition == "" {
+				errs = append(errs, fmt.Sprintf("%s.batchParameters.jobDefinition: is required", tp))
+			}
+			if t.BatchParameters.JobName == "" {
+				errs = append(errs, fmt.Sprintf("%s.batchParameters.jobName: is required", tp))
+			}
+		}
+		if t.RedshiftDataParameters != nil {
+			rp := t.RedshiftDataParameters
+			if rp.Database == "" {
+				errs = append(errs, fmt.Sprintf("%s.redshiftDataParameters.database: is required", tp))
+			}
+			if rp.Sql == "" && len(rp.Sqls) == 0 {
+				errs = append(errs, fmt.Sprintf("%s.redshiftDataParameters: must set either sql or sqls", tp))
+			}
+			if rp.Sql != "" && len(rp.Sqls) > 0 {
+				errs = append(errs, fmt.Sprintf("%s.redshiftDataParameters: sql and sqls are mutually exclusive", tp))
+			}
+		}
+		if t.SageMakerPipelineParameters != nil {
+			for j, p := range t.SageMakerPipelineParameters.PipelineParameterList {
+				if p.Name == "" {
+					errs = append(errs, fmt.Sprintf("%s.sageMakerPipelineParameters.pipelineParameterList[%d].name: is required", tp, j))
+				}
+			}
+		}
 	}
 	return errs
 }
@@ -202,6 +232,16 @@ func validateSchedule(s *Schedule, path string) []string {
 		}
 		if lt := s.Target.EcsParameters.LaunchType; lt != "" && lt != "EC2" && lt != "FARGATE" && lt != "EXTERNAL" {
 			errs = append(errs, fmt.Sprintf("%s.ecsParameters.launchType: must be EC2/FARGATE/EXTERNAL", tp))
+		}
+	}
+	if s.Target.KinesisParameters != nil && s.Target.KinesisParameters.PartitionKey == "" {
+		errs = append(errs, fmt.Sprintf("%s.kinesisParameters.partitionKey: is required", tp))
+	}
+	if s.Target.SageMakerPipelineParameters != nil {
+		for j, p := range s.Target.SageMakerPipelineParameters.PipelineParameterList {
+			if p.Name == "" {
+				errs = append(errs, fmt.Sprintf("%s.sageMakerPipelineParameters.pipelineParameterList[%d].name: is required", tp, j))
+			}
 		}
 	}
 	return errs

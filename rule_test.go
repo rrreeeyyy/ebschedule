@@ -58,6 +58,33 @@ func fullTarget() *Target {
 			Group:             "g",
 			PropagateTags:     "TASK_DEFINITION",
 		},
+		SqsParameters:     &SqsParameters{MessageGroupId: "fifo-1"},
+		KinesisParameters: &RuleKinesisParameters{PartitionKeyPath: "$.id"},
+		BatchParameters: &BatchParameters{
+			JobDefinition: "arn:aws:batch:us-east-1:1:job-definition/x:1",
+			JobName:       "nightly",
+			ArraySize:     5,
+			RetryAttempts: 2,
+		},
+		RedshiftDataParameters: &RedshiftDataParameters{
+			Database:         "warehouse",
+			DbUser:           "etl",
+			SecretManagerArn: "arn:aws:secretsmanager:us-east-1:1:secret/x",
+			Sql:              "SELECT 1",
+			StatementName:    "stmt1",
+			WithEvent:        true,
+		},
+		SageMakerPipelineParameters: &SageMakerPipelineParameters{
+			PipelineParameterList: []SageMakerPipelineParameter{
+				{Name: "p1", Value: "v1"},
+				{Name: "p2", Value: "v2"},
+			},
+		},
+		HttpParameters: &HttpParameters{
+			HeaderParameters:      map[string]string{"X-Auth": "secret"},
+			PathParameterValues:   []string{"id-1"},
+			QueryStringParameters: map[string]string{"q": "v"},
+		},
 	}
 }
 
