@@ -13,6 +13,22 @@ import (
 	schtypes "github.com/aws/aws-sdk-go-v2/service/scheduler/types"
 )
 
+// schedAPI is the subset of *scheduler.Client that ebschedule actually uses.
+// Defining it here lets tests inject a fake. *scheduler.Client satisfies it
+// implicitly.
+type schedAPI interface {
+	ListSchedules(ctx context.Context, in *scheduler.ListSchedulesInput, optFns ...func(*scheduler.Options)) (*scheduler.ListSchedulesOutput, error)
+	GetSchedule(ctx context.Context, in *scheduler.GetScheduleInput, optFns ...func(*scheduler.Options)) (*scheduler.GetScheduleOutput, error)
+	GetScheduleGroup(ctx context.Context, in *scheduler.GetScheduleGroupInput, optFns ...func(*scheduler.Options)) (*scheduler.GetScheduleGroupOutput, error)
+	CreateScheduleGroup(ctx context.Context, in *scheduler.CreateScheduleGroupInput, optFns ...func(*scheduler.Options)) (*scheduler.CreateScheduleGroupOutput, error)
+	CreateSchedule(ctx context.Context, in *scheduler.CreateScheduleInput, optFns ...func(*scheduler.Options)) (*scheduler.CreateScheduleOutput, error)
+	UpdateSchedule(ctx context.Context, in *scheduler.UpdateScheduleInput, optFns ...func(*scheduler.Options)) (*scheduler.UpdateScheduleOutput, error)
+	DeleteSchedule(ctx context.Context, in *scheduler.DeleteScheduleInput, optFns ...func(*scheduler.Options)) (*scheduler.DeleteScheduleOutput, error)
+	ListTagsForResource(ctx context.Context, in *scheduler.ListTagsForResourceInput, optFns ...func(*scheduler.Options)) (*scheduler.ListTagsForResourceOutput, error)
+	TagResource(ctx context.Context, in *scheduler.TagResourceInput, optFns ...func(*scheduler.Options)) (*scheduler.TagResourceOutput, error)
+	UntagResource(ctx context.Context, in *scheduler.UntagResourceInput, optFns ...func(*scheduler.Options)) (*scheduler.UntagResourceOutput, error)
+}
+
 // --- types -----------------------------------------------------------------
 
 // Schedule has no per-item Tags field: EventBridge Scheduler exposes tags
@@ -83,6 +99,10 @@ func dumpSchedules(ctx context.Context, region, group, prefix string) ([]*Schedu
 	if err != nil {
 		return nil, err
 	}
+	return dumpSchedulesWith(ctx, cli, group, prefix)
+}
+
+func dumpSchedulesWith(ctx context.Context, cli schedAPI, group, prefix string) ([]*Schedule, error) {
 	var out []*Schedule
 	var token *string
 	for {
@@ -214,7 +234,7 @@ func fromRemoteSchedTarget(t *schtypes.Target) *ScheduleTarget {
 // TagResource API rejects per-schedule ARNs). All ebschedule tracking
 // therefore lives on the group; ownership is decided per-group, not
 // per-schedule.
-func listGroupTags(ctx context.Context, cli *scheduler.Client, group string) (map[string]string, error) {
+func listGroupTags(ctx context.Context, cli schedAPI, group string) (map[string]string, error) {
 	gg, err := cli.GetScheduleGroup(ctx, &scheduler.GetScheduleGroupInput{
 		Name: aws.String(group),
 	})
@@ -273,11 +293,15 @@ func diffSchedules(ctx context.Context, cfg *Config) (bool, error) {
 // --- apply -----------------------------------------------------------------
 
 func applySchedules(ctx context.Context, cfg *Config, dryRun, prune bool) error {
-	group := cfg.group()
 	cli, err := newSchedClient(ctx, cfg.Region)
 	if err != nil {
 		return err
 	}
+	return applySchedulesWith(ctx, cli, cfg, dryRun, prune)
+}
+
+func applySchedulesWith(ctx context.Context, cli schedAPI, cfg *Config, dryRun, prune bool) error {
+	group := cfg.group()
 	if err := ensureScheduleGroup(ctx, cli, group, cfg, dryRun); err != nil {
 		return fmt.Errorf("ensure schedule group %s: %w", group, err)
 	}
@@ -302,7 +326,7 @@ func applySchedules(ctx context.Context, cfg *Config, dryRun, prune bool) error 
 		fmt.Fprintf(os.Stderr, "warning: schedule-group:%s lacks ebschedule-tracking-id=%s; skipping prune\n", group, cfg.TrackingID)
 		return nil
 	}
-	current, err := dumpSchedules(ctx, cfg.Region, group, "")
+	current, err := dumpSchedulesWith(ctx, cli, group, "")
 	if err != nil {
 		return err
 	}
@@ -327,7 +351,7 @@ func applySchedules(ctx context.Context, cfg *Config, dryRun, prune bool) error 
 // doesn't already exist. The "default" group always exists and is skipped.
 // Existing groups are left untouched (we don't reconcile their tags) to avoid
 // surprising side effects on groups shared with other tools.
-func ensureScheduleGroup(ctx context.Context, cli *scheduler.Client, group string, cfg *Config, dryRun bool) error {
+func ensureScheduleGroup(ctx context.Context, cli schedAPI, group string, cfg *Config, dryRun bool) error {
 	if group == "default" {
 		return nil
 	}
@@ -364,7 +388,7 @@ func ensureScheduleGroup(ctx context.Context, cli *scheduler.Client, group strin
 	return err
 }
 
-func applyOneSchedule(ctx context.Context, cli *scheduler.Client, group string, s *Schedule, dryRun bool) error {
+func applyOneSchedule(ctx context.Context, cli schedAPI, group string, s *Schedule, dryRun bool) error {
 	got, err := cli.GetSchedule(ctx, &scheduler.GetScheduleInput{
 		GroupName: aws.String(group), Name: aws.String(s.Name),
 	})
@@ -513,7 +537,7 @@ func toAWSSchedTarget(t *ScheduleTarget) (*schtypes.Target, error) {
 // tracking tag. -prune for schedules is gated on group ownership: if the
 // group isn't ours, we never delete schedules in it (safety for groups
 // shared with Terraform/CDK).
-func isGroupTracked(ctx context.Context, cli *scheduler.Client, group, trackingID string) (bool, error) {
+func isGroupTracked(ctx context.Context, cli schedAPI, group, trackingID string) (bool, error) {
 	tags, err := listGroupTags(ctx, cli, group)
 	if err != nil {
 		return false, err
