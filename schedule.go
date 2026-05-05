@@ -136,7 +136,37 @@ func fromRemoteSchedule(s *scheduler.GetScheduleOutput) *Schedule {
 	if s.Target != nil {
 		out.Target = fromRemoteSchedTarget(s.Target)
 	}
+	canonicalizeSchedule(out)
 	return out
+}
+
+// canonicalizeSchedule strips fields whose values match Scheduler's documented
+// defaults so they don't show up as spurious diff. AWS always returns these
+// even when the user never set them, which would otherwise turn every diff
+// into noise:
+//
+//   - timezone "UTC"                                       (default)
+//   - actionAfterCompletion "NONE"                         (default)
+//   - retryPolicy {MaximumRetryAttempts: 185,              (default)
+//     MaximumEventAgeInSeconds: 86400}
+//
+// Called on both sides of `diff` so that explicit user-written defaults still
+// match a stripped remote view.
+func canonicalizeSchedule(s *Schedule) {
+	if s == nil {
+		return
+	}
+	if s.ScheduleExpressionTimezone == "UTC" {
+		s.ScheduleExpressionTimezone = ""
+	}
+	if s.ActionAfterCompletion == "NONE" {
+		s.ActionAfterCompletion = ""
+	}
+	if t := s.Target; t != nil && t.RetryPolicy != nil {
+		if t.RetryPolicy.MaximumRetryAttempts == 185 && t.RetryPolicy.MaximumEventAgeInSeconds == 86400 {
+			t.RetryPolicy = nil
+		}
+	}
 }
 
 func fromRemoteSchedTarget(t *schtypes.Target) *ScheduleTarget {
@@ -216,6 +246,10 @@ func diffSchedules(ctx context.Context, cfg *Config) error {
 		cur[s.Name] = s
 	}
 	for _, want := range cfg.Schedules {
+		// Canonicalize the user side too so an explicit `timezone: UTC` (or
+		// other defaulted value) compares equal to a stripped remote view.
+		// Safe to mutate: diff and apply are separate CLI commands.
+		canonicalizeSchedule(want)
 		desiredYAML := mustYAML(want)
 		got, ok := cur[want.Name]
 		if !ok {

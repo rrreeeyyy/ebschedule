@@ -111,6 +111,78 @@ func TestToAWSSchedTarget_EcsNetworkConfigOnlyWhenSubnets(t *testing.T) {
 	})
 }
 
+func TestCanonicalizeSchedule(t *testing.T) {
+	t.Run("strips UTC timezone, NONE action, default retryPolicy", func(t *testing.T) {
+		s := &Schedule{
+			ScheduleExpressionTimezone: "UTC",
+			ActionAfterCompletion:      "NONE",
+			Target: &ScheduleTarget{
+				RetryPolicy: &RetryPolicy{
+					MaximumRetryAttempts:     185,
+					MaximumEventAgeInSeconds: 86400,
+				},
+			},
+		}
+		canonicalizeSchedule(s)
+		if s.ScheduleExpressionTimezone != "" {
+			t.Errorf("UTC timezone not stripped: %q", s.ScheduleExpressionTimezone)
+		}
+		if s.ActionAfterCompletion != "" {
+			t.Errorf("NONE action not stripped: %q", s.ActionAfterCompletion)
+		}
+		if s.Target.RetryPolicy != nil {
+			t.Errorf("default RetryPolicy not stripped: %+v", s.Target.RetryPolicy)
+		}
+	})
+
+	t.Run("keeps non-default values", func(t *testing.T) {
+		s := &Schedule{
+			ScheduleExpressionTimezone: "Asia/Tokyo",
+			ActionAfterCompletion:      "DELETE",
+			Target: &ScheduleTarget{
+				RetryPolicy: &RetryPolicy{
+					MaximumRetryAttempts:     3,
+					MaximumEventAgeInSeconds: 600,
+				},
+			},
+		}
+		before := *s
+		beforeRP := *s.Target.RetryPolicy
+		canonicalizeSchedule(s)
+		if s.ScheduleExpressionTimezone != before.ScheduleExpressionTimezone {
+			t.Errorf("timezone changed: %q", s.ScheduleExpressionTimezone)
+		}
+		if s.ActionAfterCompletion != before.ActionAfterCompletion {
+			t.Errorf("action changed: %q", s.ActionAfterCompletion)
+		}
+		if s.Target.RetryPolicy == nil || *s.Target.RetryPolicy != beforeRP {
+			t.Errorf("RetryPolicy changed: %+v", s.Target.RetryPolicy)
+		}
+	})
+
+	t.Run("partial default retryPolicy not stripped", func(t *testing.T) {
+		// Only one of the two fields matches the default; should keep both.
+		s := &Schedule{
+			Target: &ScheduleTarget{
+				RetryPolicy: &RetryPolicy{
+					MaximumRetryAttempts:     185,
+					MaximumEventAgeInSeconds: 3600,
+				},
+			},
+		}
+		canonicalizeSchedule(s)
+		if s.Target.RetryPolicy == nil {
+			t.Error("partial default RetryPolicy should not be stripped")
+		}
+	})
+
+	t.Run("nil schedule and nil target safe", func(t *testing.T) {
+		canonicalizeSchedule(nil)
+		canonicalizeSchedule(&Schedule{})
+		canonicalizeSchedule(&Schedule{Target: &ScheduleTarget{}})
+	})
+}
+
 func TestFromRemoteSchedule_FullFields(t *testing.T) {
 	startStr := "2026-06-01T00:00:00Z"
 	endStr := "2026-06-02T00:00:00Z"
