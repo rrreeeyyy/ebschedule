@@ -180,10 +180,6 @@ func validateSchedule(s *Schedule, path string) []string {
 			errs = append(errs, fmt.Sprintf("%s.flexibleTimeWindow.maximumWindowInMinutes: must be > 0 when mode=FLEXIBLE", path))
 		}
 	}
-	for k, v := range s.Tags {
-		errs = append(errs, validateTag(k, v, path+".tags")...)
-	}
-
 	if s.Target == nil {
 		errs = append(errs, fmt.Sprintf("%s.target: is required", path))
 		return errs

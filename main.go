@@ -41,7 +41,7 @@ const trackingTagKey = "ebschedule-tracking-id"
 type Config struct {
 	Region       string            `yaml:"region,omitempty"`
 	TrackingID   string            `yaml:"trackingId,omitempty"`
-	Tags         map[string]string `yaml:"tags,omitempty"` // shared by every rule + schedule
+	Tags         map[string]string `yaml:"tags,omitempty"` // applied to every Rule and to the schedule-group (Scheduler tags only at group level)
 	EventBusName string            `yaml:"eventBusName,omitempty"`
 	GroupName    string            `yaml:"groupName,omitempty"`
 	Rules        []*Rule           `yaml:"rules,omitempty"`
