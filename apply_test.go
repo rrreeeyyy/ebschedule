@@ -171,35 +171,15 @@ func (f *fakeEB) DeleteRule(_ context.Context, in *eventbridge.DeleteRuleInput, 
 	return &eventbridge.DeleteRuleOutput{}, nil
 }
 
-// silence stdout for test runs
-func captureStdout(t *testing.T, fn func()) string {
-	t.Helper()
-	orig := os.Stdout
-	r, w, _ := os.Pipe()
-	os.Stdout = w
-	done := make(chan string)
-	go func() {
-		var buf bytes.Buffer
-		_, _ = io.Copy(&buf, r)
-		done <- buf.String()
-	}()
-	fn()
-	_ = w.Close()
-	os.Stdout = orig
-	return <-done
-}
-
 // --- Rule prune tests ------------------------------------------------------
 
 func TestApplyRulesWith_PruneRequiresTrackingID(t *testing.T) {
 	f := newFakeEB()
 	cfg := &Config{Rules: []*Rule{}}
-	captureStdout(t, func() {
-		err := applyRulesWith(context.Background(), f, cfg, false, true)
-		if err == nil || !strings.Contains(err.Error(), "trackingId") {
-			t.Errorf("expected trackingId safety guard error, got %v", err)
-		}
-	})
+	err := applyRulesWith(context.Background(), io.Discard, f, cfg, false, true)
+	if err == nil || !strings.Contains(err.Error(), "trackingId") {
+		t.Errorf("expected trackingId safety guard error, got %v", err)
+	}
 	if len(f.deletedRules) != 0 {
 		t.Errorf("no deletes should happen when guard rejects: %v", f.deletedRules)
 	}
@@ -225,11 +205,10 @@ func TestApplyRulesWith_PruneOnlyDeletesTracked(t *testing.T) {
 			},
 		},
 	}
-	captureStdout(t, func() {
-		if err := applyRulesWith(context.Background(), f, cfg, false, true); err != nil {
-			t.Fatal(err)
-		}
-	})
+	var out bytes.Buffer
+	if err := applyRulesWith(context.Background(), &out, f, cfg, false, true); err != nil {
+		t.Fatal(err)
+	}
 	sort.Strings(f.deletedRules)
 	if !reflect.DeepEqual(f.deletedRules, []string{"mine-2"}) {
 		t.Errorf("deletedRules = %v, want [mine-2] only", f.deletedRules)
@@ -240,17 +219,18 @@ func TestApplyRulesWith_PruneOnlyDeletesTracked(t *testing.T) {
 	if _, ok := f.rules["wrong-id"]; !ok {
 		t.Error("rule with mismatched trackingId was deleted; safety violated")
 	}
+	if !strings.Contains(out.String(), "- rule:mine-2 (delete)") {
+		t.Errorf("delete marker missing from output: %q", out.String())
+	}
 }
 
 func TestApplyRulesWith_DryRunPruneSkipsDelete(t *testing.T) {
 	f := newFakeEB()
 	f.addRule("mine", map[string]string{trackingTagKey: "my-app"}, "tgt")
 	cfg := &Config{TrackingID: "my-app", Rules: []*Rule{}}
-	captureStdout(t, func() {
-		if err := applyRulesWith(context.Background(), f, cfg, true, true); err != nil {
-			t.Fatal(err)
-		}
-	})
+	if err := applyRulesWith(context.Background(), io.Discard, f, cfg, true, true); err != nil {
+		t.Fatal(err)
+	}
 	if len(f.deletedRules) != 0 {
 		t.Errorf("dry-run should not call DeleteRule, got %v", f.deletedRules)
 	}
@@ -412,13 +392,10 @@ func TestApplySchedulesWith_PruneSkipsUntrackedGroup(t *testing.T) {
 		Schedules:  []*Schedule{},
 	}
 
-	var stderr string
-	captureStdout(t, func() {
-		stderr = captureStderr(t, func() {
-			if err := applySchedulesWith(context.Background(), f, cfg, false, true); err != nil {
-				t.Fatal(err)
-			}
-		})
+	stderr := captureStderr(t, func() {
+		if err := applySchedulesWith(context.Background(), io.Discard, f, cfg, false, true); err != nil {
+			t.Fatal(err)
+		}
 	})
 
 	if len(f.deletedSchedules) != 0 {
@@ -454,11 +431,9 @@ func TestApplySchedulesWith_PruneDeletesUndesiredInTrackedGroup(t *testing.T) {
 			},
 		},
 	}
-	captureStdout(t, func() {
-		if err := applySchedulesWith(context.Background(), f, cfg, false, true); err != nil {
-			t.Fatal(err)
-		}
-	})
+	if err := applySchedulesWith(context.Background(), io.Discard, f, cfg, false, true); err != nil {
+		t.Fatal(err)
+	}
 	if !reflect.DeepEqual(f.deletedSchedules, []string{"drop-me"}) {
 		t.Errorf("deletedSchedules = %v, want [drop-me] only", f.deletedSchedules)
 	}
@@ -473,11 +448,10 @@ func TestEnsureScheduleGroup_CreatesWithTrackingTag(t *testing.T) {
 		TrackingID: "my-app",
 		Tags:       map[string]string{"Owner": "team"},
 	}
-	captureStdout(t, func() {
-		if err := ensureScheduleGroup(context.Background(), f, "new-group", cfg, false); err != nil {
-			t.Fatal(err)
-		}
-	})
+	var out bytes.Buffer
+	if err := ensureScheduleGroup(context.Background(), &out, f, "new-group", cfg, false); err != nil {
+		t.Fatal(err)
+	}
 	if !reflect.DeepEqual(f.createdGroups, []string{"new-group"}) {
 		t.Errorf("createdGroups = %v, want [new-group]", f.createdGroups)
 	}
@@ -488,17 +462,18 @@ func TestEnsureScheduleGroup_CreatesWithTrackingTag(t *testing.T) {
 	if tags["Owner"] != "team" {
 		t.Errorf("Owner tag missing on created group: %v", tags)
 	}
+	if !strings.Contains(out.String(), "+ schedule-group:new-group (create)") {
+		t.Errorf("create marker missing from output: %q", out.String())
+	}
 }
 
 func TestEnsureScheduleGroup_NoOpForExisting(t *testing.T) {
 	f := newFakeSched()
 	f.addGroup("existing", nil)
 	cfg := &Config{TrackingID: "my-app"}
-	captureStdout(t, func() {
-		if err := ensureScheduleGroup(context.Background(), f, "existing", cfg, false); err != nil {
-			t.Fatal(err)
-		}
-	})
+	if err := ensureScheduleGroup(context.Background(), io.Discard, f, "existing", cfg, false); err != nil {
+		t.Fatal(err)
+	}
 	if len(f.createdGroups) != 0 {
 		t.Errorf("should not re-create existing group, got %v", f.createdGroups)
 	}

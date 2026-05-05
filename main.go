@@ -16,6 +16,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -139,28 +140,29 @@ Exit codes:
 		os.Exit(exitErr)
 	}
 	ctx := context.Background()
+	out := os.Stdout
 	switch args[0] {
 	case "dump":
 		prefix := ""
 		if len(args) > 1 {
 			prefix = args[1]
 		}
-		check(runDump(ctx, confPath, prefix))
+		check(runDump(ctx, out, confPath, prefix))
 	case "diff":
 		cfgs, err := loadConfigs(confPath)
 		check(err)
 		drift := false
 		for _, cfg := range cfgs {
 			if len(cfgs) > 1 {
-				fmt.Printf("# %s\n", cfg.sourcePath)
+				fmt.Fprintf(out, "# %s\n", cfg.sourcePath)
 			}
 			if cfg.Rules != nil {
-				d, err := diffRules(ctx, cfg)
+				d, err := diffRules(ctx, out, cfg)
 				check(err)
 				drift = drift || d
 			}
 			if cfg.Schedules != nil {
-				d, err := diffSchedules(ctx, cfg)
+				d, err := diffSchedules(ctx, out, cfg)
 				check(err)
 				drift = drift || d
 			}
@@ -173,13 +175,13 @@ Exit codes:
 		check(err)
 		for _, cfg := range cfgs {
 			if len(cfgs) > 1 {
-				fmt.Printf("# %s\n", cfg.sourcePath)
+				fmt.Fprintf(out, "# %s\n", cfg.sourcePath)
 			}
 			if cfg.Rules != nil {
-				check(applyRules(ctx, cfg, dryRun, prune))
+				check(applyRules(ctx, out, cfg, dryRun, prune))
 			}
 			if cfg.Schedules != nil {
-				check(applySchedules(ctx, cfg, dryRun, prune))
+				check(applySchedules(ctx, out, cfg, dryRun, prune))
 			}
 		}
 	case "validate":
@@ -207,7 +209,7 @@ func check(err error) {
 // If confPath does not exist (the bootstrap case), runDump falls through
 // using AWS defaults. Other load errors (parse / template / strict YAML)
 // are surfaced so typos can't be silently swallowed.
-func runDump(ctx context.Context, confPath, prefix string) error {
+func runDump(ctx context.Context, out io.Writer, confPath, prefix string) error {
 	region, bus, group := "", "default", "default"
 	cfgs, err := loadConfigs(confPath)
 	if err != nil && !errors.Is(err, errNoConfigFiles) {
@@ -222,26 +224,26 @@ func runDump(ctx context.Context, confPath, prefix string) error {
 			group = cfgs[0].GroupName
 		}
 	}
-	out := &Config{Region: region}
+	dumped := &Config{Region: region}
 	if bus != "default" {
-		out.EventBusName = bus
+		dumped.EventBusName = bus
 	}
 	if group != "default" {
-		out.GroupName = group
+		dumped.GroupName = group
 	}
 	rules, err := dumpRules(ctx, region, bus, prefix)
 	if err != nil {
 		return fmt.Errorf("dump rules: %w", err)
 	}
-	out.Rules = rules
+	dumped.Rules = rules
 	schedules, err := dumpSchedules(ctx, region, group, prefix)
 	if err != nil {
 		return fmt.Errorf("dump schedules: %w", err)
 	}
-	out.Schedules = schedules
-	enc := yaml.NewEncoder(os.Stdout)
+	dumped.Schedules = schedules
+	enc := yaml.NewEncoder(out)
 	enc.SetIndent(2)
-	return enc.Encode(out)
+	return enc.Encode(dumped)
 }
 
 // --- file expansion (template + glob) --------------------------------------
@@ -305,8 +307,27 @@ func loadConfigsWithFuncs(pattern string, funcs template.FuncMap) ([]*Config, er
 }
 
 // runtimeFuncs returns the FuncMap used by dump/diff/apply. Hits AWS for SSM
-// and errors loudly if must_env is unset.
+// and errors loudly if must_env is unset. Each call returns a fresh closure
+// that owns its own lazily-constructed *ssm.Client, so test runs don't share
+// state and there's no package-level singleton.
 func runtimeFuncs() template.FuncMap {
+	var client *ssm.Client
+	ssmFetch := func(name string) (string, error) {
+		if client == nil {
+			cfg, err := awsconfig.LoadDefaultConfig(context.Background())
+			if err != nil {
+				return "", err
+			}
+			client = ssm.NewFromConfig(cfg)
+		}
+		out, err := client.GetParameter(context.Background(), &ssm.GetParameterInput{
+			Name: aws.String(name), WithDecryption: aws.Bool(true),
+		})
+		if err != nil {
+			return "", fmt.Errorf("ssm:%s: %w", name, err)
+		}
+		return aws.ToString(out.Parameter.Value), nil
+	}
 	return template.FuncMap{
 		"env": os.Getenv,
 		"must_env": func(name string) (string, error) {
@@ -347,25 +368,6 @@ func expandTemplate(raw []byte, funcs template.FuncMap) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-var ssmClient *ssm.Client
-
-func ssmFetch(name string) (string, error) {
-	if ssmClient == nil {
-		cfg, err := awsconfig.LoadDefaultConfig(context.Background())
-		if err != nil {
-			return "", err
-		}
-		ssmClient = ssm.NewFromConfig(cfg)
-	}
-	out, err := ssmClient.GetParameter(context.Background(), &ssm.GetParameterInput{
-		Name: aws.String(name), WithDecryption: aws.Bool(true),
-	})
-	if err != nil {
-		return "", fmt.Errorf("ssm:%s: %w", name, err)
-	}
-	return aws.ToString(out.Parameter.Value), nil
-}
-
 func loadAWS(ctx context.Context, region string) (aws.Config, error) {
 	opts := []func(*awsconfig.LoadOptions) error{}
 	if region != "" {
@@ -376,12 +378,21 @@ func loadAWS(ctx context.Context, region string) (aws.Config, error) {
 
 // --- diff helpers ----------------------------------------------------------
 
+// mustYAML encodes v to a 2-space-indented YAML string. Panics on error,
+// since v is always an in-memory struct we control and yaml.Encoder writes
+// to a bytes.Buffer that can't fail; an error here would mean a programming
+// bug (e.g. an unmarshalable type) we want surfaced loudly rather than
+// silently producing an empty diff.
 func mustYAML(v any) string {
 	var buf bytes.Buffer
 	enc := yaml.NewEncoder(&buf)
 	enc.SetIndent(2)
-	_ = enc.Encode(v)
-	_ = enc.Close()
+	if err := enc.Encode(v); err != nil {
+		panic(fmt.Errorf("mustYAML encode: %w", err))
+	}
+	if err := enc.Close(); err != nil {
+		panic(fmt.Errorf("mustYAML close: %w", err))
+	}
 	return buf.String()
 }
 
