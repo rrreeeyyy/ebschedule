@@ -200,6 +200,7 @@ func TestFromRemoteSchedule_FullFields(t *testing.T) {
 	in := &scheduler.GetScheduleOutput{
 		Name:                       aws.String("s1"),
 		Description:                aws.String("desc"),
+		GroupName:                  aws.String("my-group"),
 		ScheduleExpression:         aws.String("rate(5 minutes)"),
 		ScheduleExpressionTimezone: aws.String("Asia/Tokyo"),
 		State:                      schtypes.ScheduleStateEnabled,
@@ -221,6 +222,7 @@ func TestFromRemoteSchedule_FullFields(t *testing.T) {
 	want := &Schedule{
 		Name:                       "s1",
 		Description:                "desc",
+		GroupName:                  "my-group",
 		ScheduleExpression:         "rate(5 minutes)",
 		ScheduleExpressionTimezone: "Asia/Tokyo",
 		State:                      "ENABLED",
