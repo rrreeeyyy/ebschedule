@@ -6,6 +6,14 @@ linters:
     - misspell
     - revive
   settings:
+    errcheck:
+      # fmt.Fprint* into our output writer (typically os.Stdout) cannot
+      # meaningfully fail at runtime, and a CLI tool can't recover even if
+      # it did. Skip the boilerplate _, _ = ... pattern site-wide.
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
     revive:
       rules:
         # Field/type names mirror the AWS SDK (RoleArn, TaskDefinitionArn,
