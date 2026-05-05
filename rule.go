@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 
@@ -216,9 +217,9 @@ func fromRemoteTarget(t ebtypes.Target) *Target {
 
 // --- diff ------------------------------------------------------------------
 
-// diffRules emits a unified diff per rule and returns whether any rule has
-// drift. Drift = a desired rule is missing remotely or differs from remote.
-func diffRules(ctx context.Context, cfg *Config) (bool, error) {
+// diffRules emits a unified diff per rule to out and returns whether any
+// rule has drift. Drift = a desired rule is missing remotely or differs.
+func diffRules(ctx context.Context, out io.Writer, cfg *Config) (bool, error) {
 	current, err := dumpRules(ctx, cfg.Region, cfg.bus(), "")
 	if err != nil {
 		return false, err
@@ -234,7 +235,7 @@ func diffRules(ctx context.Context, cfg *Config) (bool, error) {
 		desiredYAML := mustYAML(&desired)
 		got, ok := cur[want.Name]
 		if !ok {
-			fmt.Print(unifiedDiff("rule:"+want.Name, "", desiredYAML))
+			fmt.Fprint(out, unifiedDiff("rule:"+want.Name, "", desiredYAML))
 			drift = true
 			continue
 		}
@@ -242,7 +243,7 @@ func diffRules(ctx context.Context, cfg *Config) (bool, error) {
 		if gotYAML == desiredYAML {
 			continue
 		}
-		fmt.Print(unifiedDiff("rule:"+want.Name, gotYAML, desiredYAML))
+		fmt.Fprint(out, unifiedDiff("rule:"+want.Name, gotYAML, desiredYAML))
 		drift = true
 	}
 	return drift, nil
@@ -250,20 +251,20 @@ func diffRules(ctx context.Context, cfg *Config) (bool, error) {
 
 // --- apply -----------------------------------------------------------------
 
-func applyRules(ctx context.Context, cfg *Config, dryRun, prune bool) error {
+func applyRules(ctx context.Context, out io.Writer, cfg *Config, dryRun, prune bool) error {
 	cli, err := newEBClient(ctx, cfg.Region)
 	if err != nil {
 		return err
 	}
-	return applyRulesWith(ctx, cli, cfg, dryRun, prune)
+	return applyRulesWith(ctx, out, cli, cfg, dryRun, prune)
 }
 
-func applyRulesWith(ctx context.Context, cli ebAPI, cfg *Config, dryRun, prune bool) error {
+func applyRulesWith(ctx context.Context, out io.Writer, cli ebAPI, cfg *Config, dryRun, prune bool) error {
 	bus := cfg.bus()
 	desired := map[string]bool{}
 	for _, r := range cfg.Rules {
 		desired[r.Name] = true
-		if err := applyOneRule(ctx, cli, bus, cfg, r, dryRun); err != nil {
+		if err := applyOneRule(ctx, out, cli, bus, cfg, r, dryRun); err != nil {
 			return fmt.Errorf("rule %s: %w", r.Name, err)
 		}
 	}
@@ -288,7 +289,7 @@ func applyRulesWith(ctx context.Context, cli ebAPI, cfg *Config, dryRun, prune b
 		if !tracked {
 			continue
 		}
-		fmt.Printf("- rule:%s (delete)\n", r.Name)
+		fmt.Fprintf(out, "- rule:%s (delete)\n", r.Name)
 		if dryRun {
 			continue
 		}
@@ -338,7 +339,7 @@ func fetchCurrentRule(ctx context.Context, cli ebAPI, bus, name string) (snap *R
 	return snap, arn, true, nil
 }
 
-func applyOneRule(ctx context.Context, cli ebAPI, bus string, cfg *Config, r *Rule, dryRun bool) error {
+func applyOneRule(ctx context.Context, out io.Writer, cli ebAPI, bus string, cfg *Config, r *Rule, dryRun bool) error {
 	current, currentArn, exists, err := fetchCurrentRule(ctx, cli, bus, r.Name)
 	if err != nil {
 		return err
@@ -349,13 +350,13 @@ func applyOneRule(ctx context.Context, cli ebAPI, bus string, cfg *Config, r *Ru
 
 	switch {
 	case !exists:
-		fmt.Printf("+ rule:%s (create)\n", r.Name)
+		fmt.Fprintf(out, "+ rule:%s (create)\n", r.Name)
 	default:
 		if mustYAML(current) == desiredYAML {
-			fmt.Printf("= rule:%s (no-op)\n", r.Name)
+			fmt.Fprintf(out, "= rule:%s (no-op)\n", r.Name)
 			return nil
 		}
-		fmt.Printf("~ rule:%s (update)\n", r.Name)
+		fmt.Fprintf(out, "~ rule:%s (update)\n", r.Name)
 	}
 	if dryRun {
 		return nil

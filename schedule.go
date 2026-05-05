@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
@@ -156,14 +157,12 @@ func fromRemoteSchedule(s *scheduler.GetScheduleOutput) *Schedule {
 	if s.Target != nil {
 		out.Target = fromRemoteSchedTarget(s.Target)
 	}
-	canonicalizeSchedule(out)
-	return out
+	return canonicalizeSchedule(out)
 }
 
-// canonicalizeSchedule strips fields whose values match Scheduler's documented
-// defaults so they don't show up as spurious diff. AWS always returns these
-// even when the user never set them, which would otherwise turn every diff
-// into noise:
+// canonicalizeSchedule returns a copy of s with fields stripped where they
+// match Scheduler's documented defaults. AWS always returns these even when
+// the user never set them, which would otherwise turn every diff into noise:
 //
 //   - timezone "UTC"                                       (default)
 //   - actionAfterCompletion "NONE"                         (default)
@@ -171,22 +170,27 @@ func fromRemoteSchedule(s *scheduler.GetScheduleOutput) *Schedule {
 //     MaximumEventAgeInSeconds: 86400}
 //
 // Called on both sides of `diff` so that explicit user-written defaults still
-// match a stripped remote view.
-func canonicalizeSchedule(s *Schedule) {
+// match a stripped remote view. Non-destructive: the caller's *Schedule and
+// nested *ScheduleTarget are never mutated.
+func canonicalizeSchedule(s *Schedule) *Schedule {
 	if s == nil {
-		return
+		return nil
 	}
-	if s.ScheduleExpressionTimezone == "UTC" {
-		s.ScheduleExpressionTimezone = ""
+	out := *s
+	if out.ScheduleExpressionTimezone == "UTC" {
+		out.ScheduleExpressionTimezone = ""
 	}
-	if s.ActionAfterCompletion == "NONE" {
-		s.ActionAfterCompletion = ""
+	if out.ActionAfterCompletion == "NONE" {
+		out.ActionAfterCompletion = ""
 	}
-	if t := s.Target; t != nil && t.RetryPolicy != nil {
-		if t.RetryPolicy.MaximumRetryAttempts == 185 && t.RetryPolicy.MaximumEventAgeInSeconds == 86400 {
-			t.RetryPolicy = nil
-		}
+	if t := out.Target; t != nil && t.RetryPolicy != nil &&
+		t.RetryPolicy.MaximumRetryAttempts == 185 &&
+		t.RetryPolicy.MaximumEventAgeInSeconds == 86400 {
+		tgtCopy := *t
+		tgtCopy.RetryPolicy = nil
+		out.Target = &tgtCopy
 	}
+	return &out
 }
 
 func fromRemoteSchedTarget(t *schtypes.Target) *ScheduleTarget {
@@ -256,9 +260,9 @@ func listGroupTags(ctx context.Context, cli schedAPI, group string) (map[string]
 
 // --- diff ------------------------------------------------------------------
 
-// diffSchedules emits a unified diff per schedule and returns whether any
-// schedule has drift.
-func diffSchedules(ctx context.Context, cfg *Config) (bool, error) {
+// diffSchedules emits a unified diff per schedule to out and returns
+// whether any schedule has drift.
+func diffSchedules(ctx context.Context, out io.Writer, cfg *Config) (bool, error) {
 	current, err := dumpSchedules(ctx, cfg.Region, cfg.group(), "")
 	if err != nil {
 		return false, err
@@ -271,12 +275,10 @@ func diffSchedules(ctx context.Context, cfg *Config) (bool, error) {
 	for _, want := range cfg.Schedules {
 		// Canonicalize the user side too so an explicit `timezone: UTC` (or
 		// other defaulted value) compares equal to a stripped remote view.
-		// Safe to mutate: diff and apply are separate CLI commands.
-		canonicalizeSchedule(want)
-		desiredYAML := mustYAML(want)
+		desiredYAML := mustYAML(canonicalizeSchedule(want))
 		got, ok := cur[want.Name]
 		if !ok {
-			fmt.Print(unifiedDiff("schedule:"+want.Name, "", desiredYAML))
+			fmt.Fprint(out, unifiedDiff("schedule:"+want.Name, "", desiredYAML))
 			drift = true
 			continue
 		}
@@ -284,7 +286,7 @@ func diffSchedules(ctx context.Context, cfg *Config) (bool, error) {
 		if gotYAML == desiredYAML {
 			continue
 		}
-		fmt.Print(unifiedDiff("schedule:"+want.Name, gotYAML, desiredYAML))
+		fmt.Fprint(out, unifiedDiff("schedule:"+want.Name, gotYAML, desiredYAML))
 		drift = true
 	}
 	return drift, nil
@@ -292,23 +294,23 @@ func diffSchedules(ctx context.Context, cfg *Config) (bool, error) {
 
 // --- apply -----------------------------------------------------------------
 
-func applySchedules(ctx context.Context, cfg *Config, dryRun, prune bool) error {
+func applySchedules(ctx context.Context, out io.Writer, cfg *Config, dryRun, prune bool) error {
 	cli, err := newSchedClient(ctx, cfg.Region)
 	if err != nil {
 		return err
 	}
-	return applySchedulesWith(ctx, cli, cfg, dryRun, prune)
+	return applySchedulesWith(ctx, out, cli, cfg, dryRun, prune)
 }
 
-func applySchedulesWith(ctx context.Context, cli schedAPI, cfg *Config, dryRun, prune bool) error {
+func applySchedulesWith(ctx context.Context, out io.Writer, cli schedAPI, cfg *Config, dryRun, prune bool) error {
 	group := cfg.group()
-	if err := ensureScheduleGroup(ctx, cli, group, cfg, dryRun); err != nil {
+	if err := ensureScheduleGroup(ctx, out, cli, group, cfg, dryRun); err != nil {
 		return fmt.Errorf("ensure schedule group %s: %w", group, err)
 	}
 	desired := map[string]bool{}
 	for _, s := range cfg.Schedules {
 		desired[s.Name] = true
-		if err := applyOneSchedule(ctx, cli, group, s, dryRun); err != nil {
+		if err := applyOneSchedule(ctx, out, cli, group, s, dryRun); err != nil {
 			return fmt.Errorf("schedule %s: %w", s.Name, err)
 		}
 	}
@@ -334,7 +336,7 @@ func applySchedulesWith(ctx context.Context, cli schedAPI, cfg *Config, dryRun, 
 		if desired[s.Name] {
 			continue
 		}
-		fmt.Printf("- schedule:%s (delete)\n", s.Name)
+		fmt.Fprintf(out, "- schedule:%s (delete)\n", s.Name)
 		if dryRun {
 			continue
 		}
@@ -351,7 +353,7 @@ func applySchedulesWith(ctx context.Context, cli schedAPI, cfg *Config, dryRun, 
 // doesn't already exist. The "default" group always exists and is skipped.
 // Existing groups are left untouched (we don't reconcile their tags) to avoid
 // surprising side effects on groups shared with other tools.
-func ensureScheduleGroup(ctx context.Context, cli schedAPI, group string, cfg *Config, dryRun bool) error {
+func ensureScheduleGroup(ctx context.Context, out io.Writer, cli schedAPI, group string, cfg *Config, dryRun bool) error {
 	if group == "default" {
 		return nil
 	}
@@ -365,7 +367,7 @@ func ensureScheduleGroup(ctx context.Context, cli schedAPI, group string, cfg *C
 	if !errors.As(err, &nf) {
 		return err
 	}
-	fmt.Printf("+ schedule-group:%s (create)\n", group)
+	fmt.Fprintf(out, "+ schedule-group:%s (create)\n", group)
 	if dryRun {
 		return nil
 	}
@@ -388,7 +390,7 @@ func ensureScheduleGroup(ctx context.Context, cli schedAPI, group string, cfg *C
 	return err
 }
 
-func applyOneSchedule(ctx context.Context, cli schedAPI, group string, s *Schedule, dryRun bool) error {
+func applyOneSchedule(ctx context.Context, out io.Writer, cli schedAPI, group string, s *Schedule, dryRun bool) error {
 	got, err := cli.GetSchedule(ctx, &scheduler.GetScheduleInput{
 		GroupName: aws.String(group), Name: aws.String(s.Name),
 	})
@@ -401,19 +403,18 @@ func applyOneSchedule(ctx context.Context, cli schedAPI, group string, s *Schedu
 		exists = false
 	}
 
-	canonicalizeSchedule(s)
-	desiredYAML := mustYAML(s)
+	desiredYAML := mustYAML(canonicalizeSchedule(s))
 
 	switch {
 	case !exists:
-		fmt.Printf("+ schedule:%s (create)\n", s.Name)
+		fmt.Fprintf(out, "+ schedule:%s (create)\n", s.Name)
 	default:
 		current := fromRemoteSchedule(got)
 		if mustYAML(current) == desiredYAML {
-			fmt.Printf("= schedule:%s (no-op)\n", s.Name)
+			fmt.Fprintf(out, "= schedule:%s (no-op)\n", s.Name)
 			return nil
 		}
-		fmt.Printf("~ schedule:%s (update)\n", s.Name)
+		fmt.Fprintf(out, "~ schedule:%s (update)\n", s.Name)
 	}
 	if dryRun {
 		return nil

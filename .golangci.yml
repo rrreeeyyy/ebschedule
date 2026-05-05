@@ -8,5 +8,9 @@ linters:
   settings:
     revive:
       rules:
+        # Field/type names mirror the AWS SDK (RoleArn, TaskDefinitionArn,
+        # EcsParameters) rather than RoleARN / TaskDefinitionARN /
+        # ECSParameters so YAML round-trips cleanly with our own dump
+        # output. Disable var-naming rather than auditing every identifier.
         - name: var-naming
-          disabled: true   # we deliberately use SchedEcsParameters etc.
+          disabled: true

@@ -123,15 +123,25 @@ func TestCanonicalizeSchedule(t *testing.T) {
 				},
 			},
 		}
-		canonicalizeSchedule(s)
-		if s.ScheduleExpressionTimezone != "" {
-			t.Errorf("UTC timezone not stripped: %q", s.ScheduleExpressionTimezone)
+		got := canonicalizeSchedule(s)
+		if got.ScheduleExpressionTimezone != "" {
+			t.Errorf("UTC timezone not stripped: %q", got.ScheduleExpressionTimezone)
 		}
-		if s.ActionAfterCompletion != "" {
-			t.Errorf("NONE action not stripped: %q", s.ActionAfterCompletion)
+		if got.ActionAfterCompletion != "" {
+			t.Errorf("NONE action not stripped: %q", got.ActionAfterCompletion)
 		}
-		if s.Target.RetryPolicy != nil {
-			t.Errorf("default RetryPolicy not stripped: %+v", s.Target.RetryPolicy)
+		if got.Target.RetryPolicy != nil {
+			t.Errorf("default RetryPolicy not stripped: %+v", got.Target.RetryPolicy)
+		}
+		// Non-destructive: original must be unchanged.
+		if s.ScheduleExpressionTimezone != "UTC" {
+			t.Errorf("input mutated; ScheduleExpressionTimezone = %q", s.ScheduleExpressionTimezone)
+		}
+		if s.ActionAfterCompletion != "NONE" {
+			t.Errorf("input mutated; ActionAfterCompletion = %q", s.ActionAfterCompletion)
+		}
+		if s.Target.RetryPolicy == nil {
+			t.Error("input mutated; original RetryPolicy was cleared")
 		}
 	})
 
@@ -146,22 +156,19 @@ func TestCanonicalizeSchedule(t *testing.T) {
 				},
 			},
 		}
-		before := *s
-		beforeRP := *s.Target.RetryPolicy
-		canonicalizeSchedule(s)
-		if s.ScheduleExpressionTimezone != before.ScheduleExpressionTimezone {
-			t.Errorf("timezone changed: %q", s.ScheduleExpressionTimezone)
+		got := canonicalizeSchedule(s)
+		if got.ScheduleExpressionTimezone != "Asia/Tokyo" {
+			t.Errorf("timezone changed: %q", got.ScheduleExpressionTimezone)
 		}
-		if s.ActionAfterCompletion != before.ActionAfterCompletion {
-			t.Errorf("action changed: %q", s.ActionAfterCompletion)
+		if got.ActionAfterCompletion != "DELETE" {
+			t.Errorf("action changed: %q", got.ActionAfterCompletion)
 		}
-		if s.Target.RetryPolicy == nil || *s.Target.RetryPolicy != beforeRP {
-			t.Errorf("RetryPolicy changed: %+v", s.Target.RetryPolicy)
+		if got.Target.RetryPolicy == nil || got.Target.RetryPolicy.MaximumRetryAttempts != 3 {
+			t.Errorf("RetryPolicy changed: %+v", got.Target.RetryPolicy)
 		}
 	})
 
 	t.Run("partial default retryPolicy not stripped", func(t *testing.T) {
-		// Only one of the two fields matches the default; should keep both.
 		s := &Schedule{
 			Target: &ScheduleTarget{
 				RetryPolicy: &RetryPolicy{
@@ -170,14 +177,16 @@ func TestCanonicalizeSchedule(t *testing.T) {
 				},
 			},
 		}
-		canonicalizeSchedule(s)
-		if s.Target.RetryPolicy == nil {
+		got := canonicalizeSchedule(s)
+		if got.Target.RetryPolicy == nil {
 			t.Error("partial default RetryPolicy should not be stripped")
 		}
 	})
 
-	t.Run("nil schedule and nil target safe", func(t *testing.T) {
-		canonicalizeSchedule(nil)
+	t.Run("nil and empty inputs safe", func(t *testing.T) {
+		if canonicalizeSchedule(nil) != nil {
+			t.Error("expected nil for nil input")
+		}
 		canonicalizeSchedule(&Schedule{})
 		canonicalizeSchedule(&Schedule{Target: &ScheduleTarget{}})
 	})
