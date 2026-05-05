@@ -1,0 +1,18 @@
+# multi-file/02-team-b.yaml: team B's schedules, isolated from team A.
+
+region: ap-northeast-1
+trackingId: examples-team-b
+groupName: team-b
+tags:
+  Owner: team-b
+
+schedules:
+  - name: team-b-export
+    scheduleExpression: rate(30 minutes)
+    state: ENABLED
+    flexibleTimeWindow:
+      mode: FLEXIBLE
+      maximumWindowInMinutes: 5
+    target:
+      arn: arn:aws:lambda:ap-northeast-1:{{ must_env "AWS_ACCOUNT_ID" }}:function:team-b-export
+      roleArn: arn:aws:iam::{{ must_env "AWS_ACCOUNT_ID" }}:role/SchedulerInvokeLambda

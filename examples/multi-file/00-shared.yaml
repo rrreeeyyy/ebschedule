@@ -1,0 +1,17 @@
+# multi-file/00-shared.yaml: shared infra (a Lambda triggered by S3 events).
+#
+# Loaded together with the per-team files below via:
+#   ebschedule -conf 'examples/multi-file/*.yaml' apply
+
+region: ap-northeast-1
+trackingId: examples-shared
+tags:
+  Owner: platform
+
+rules:
+  - name: shared-on-s3-upload
+    eventPattern: '{"source": ["aws.s3"], "detail-type": ["Object Created"]}'
+    state: ENABLED
+    targets:
+      - id: lambda
+        arn: arn:aws:lambda:ap-northeast-1:{{ must_env "AWS_ACCOUNT_ID" }}:function:shared-uploader-handler

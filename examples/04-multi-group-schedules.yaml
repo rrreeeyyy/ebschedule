@@ -1,0 +1,51 @@
+# 04-multi-group-schedules: spread schedules across multiple groups from one config.
+#
+# Each Schedule can override Config.GroupName via its own `groupName:` field.
+# Useful when you want a per-team or per-purpose grouping without splitting
+# the config file (a single team's CI keeps owning a single YAML).
+#
+# On apply, ebschedule creates each missing group on the fly (with cfg.tags +
+# trackingId) and applies the schedule into it. -prune iterates *every*
+# schedule-group in the account that carries our trackingId, so removing
+# `team-a` here would still clean up its schedule on a subsequent apply.
+
+region: ap-northeast-1
+trackingId: examples-04
+groupName: examples-shared            # default for schedules without an override
+tags:
+  Owner: examples
+
+schedules:
+  # No groupName -> lands in cfg.GroupName (examples-shared)
+  - name: heartbeat
+    scheduleExpression: rate(5 minutes)
+    state: ENABLED
+    flexibleTimeWindow:
+      mode: OFF
+    target:
+      arn: arn:aws:lambda:ap-northeast-1:{{ must_env "AWS_ACCOUNT_ID" }}:function:heartbeat
+      roleArn: arn:aws:iam::{{ must_env "AWS_ACCOUNT_ID" }}:role/SchedulerInvokeLambda
+
+  # Per-schedule override: lands in `examples-team-a` group instead.
+  - name: team-a-batch
+    groupName: examples-team-a
+    scheduleExpression: cron(0 2 * * ? *)
+    timezone: Asia/Tokyo
+    state: ENABLED
+    flexibleTimeWindow:
+      mode: FLEXIBLE
+      maximumWindowInMinutes: 15
+    target:
+      arn: arn:aws:lambda:ap-northeast-1:{{ must_env "AWS_ACCOUNT_ID" }}:function:team-a-batch
+      roleArn: arn:aws:iam::{{ must_env "AWS_ACCOUNT_ID" }}:role/SchedulerInvokeLambda
+
+  - name: team-b-batch
+    groupName: examples-team-b
+    scheduleExpression: cron(0 4 * * ? *)
+    timezone: Asia/Tokyo
+    state: ENABLED
+    flexibleTimeWindow:
+      mode: OFF
+    target:
+      arn: arn:aws:lambda:ap-northeast-1:{{ must_env "AWS_ACCOUNT_ID" }}:function:team-b-batch
+      roleArn: arn:aws:iam::{{ must_env "AWS_ACCOUNT_ID" }}:role/SchedulerInvokeLambda

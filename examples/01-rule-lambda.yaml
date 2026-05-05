@@ -1,0 +1,20 @@
+# 01-rule-lambda: smallest possible config.
+#
+# A single EventBridge Rule that fires every hour and invokes a Lambda
+# function. EventBridge Rule -> Lambda is the most common shape because no
+# IAM role is required (Lambda's resource policy authorizes EventBridge).
+#
+# Apply:
+#   AWS_ACCOUNT_ID=123456789012 ebschedule -conf examples/01-rule-lambda.yaml apply
+
+region: ap-northeast-1
+trackingId: examples-01
+
+rules:
+  - name: example-hourly
+    description: Hourly Lambda trigger
+    scheduleExpression: rate(1 hour)
+    state: ENABLED
+    targets:
+      - id: lambda
+        arn: arn:aws:lambda:ap-northeast-1:{{ must_env "AWS_ACCOUNT_ID" }}:function:my-handler

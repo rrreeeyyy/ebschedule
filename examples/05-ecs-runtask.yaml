@@ -1,0 +1,49 @@
+# 05-ecs-runtask: ECS RunTask via EventBridge Rule.
+#
+# This is what `ebschedule import-ecschedule` would emit; the same shape ECS
+# Scheduled Tasks use behind the console. containerOverrides go into the
+# target's `input` JSON (EventBridge wraps it into the RunTask call).
+#
+# For Scheduler instead of Rule, see examples/03-schedule-cron-timezone.yaml
+# and use `target.ecsParameters` on a Schedule (similar shape).
+
+region: ap-northeast-1
+trackingId: examples-05
+tags:
+  Owner: examples
+
+rules:
+  - name: example-nightly-etl
+    description: Nightly ETL via ECS Fargate
+    scheduleExpression: cron(0 18 * * ? *)
+    state: ENABLED
+    targets:
+      - id: ecs
+        arn: arn:aws:ecs:ap-northeast-1:{{ must_env "AWS_ACCOUNT_ID" }}:cluster/data-pipeline
+        roleArn: arn:aws:iam::{{ must_env "AWS_ACCOUNT_ID" }}:role/ecsEventsRole
+        ecsParameters:
+          taskDefinitionArn: arn:aws:ecs:ap-northeast-1:{{ must_env "AWS_ACCOUNT_ID" }}:task-definition/etl
+          taskCount: 1
+          launchType: FARGATE
+          platformVersion: LATEST
+          subnets: [subnet-aaa, subnet-bbb]
+          securityGroups: [sg-egress]
+          assignPublicIp: DISABLED
+          propagateTags: TASK_DEFINITION
+        # ECS RunTask container overrides go through `input` as JSON.
+        input: |
+          {
+            "containerOverrides": [
+              {
+                "name": "app",
+                "command": ["python", "etl.py"],
+                "environment": [
+                  {"name": "ENV", "value": "production"},
+                  {"name": "RUN_DATE", "value": "auto"}
+                ]
+              }
+            ]
+          }
+        retryPolicy:
+          maximumRetryAttempts: 2
+          maximumEventAgeInSeconds: 3600
