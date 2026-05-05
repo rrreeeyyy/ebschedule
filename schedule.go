@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"sort"
 	"strings"
 
@@ -20,6 +19,7 @@ import (
 type schedAPI interface {
 	ListSchedules(ctx context.Context, in *scheduler.ListSchedulesInput, optFns ...func(*scheduler.Options)) (*scheduler.ListSchedulesOutput, error)
 	GetSchedule(ctx context.Context, in *scheduler.GetScheduleInput, optFns ...func(*scheduler.Options)) (*scheduler.GetScheduleOutput, error)
+	ListScheduleGroups(ctx context.Context, in *scheduler.ListScheduleGroupsInput, optFns ...func(*scheduler.Options)) (*scheduler.ListScheduleGroupsOutput, error)
 	GetScheduleGroup(ctx context.Context, in *scheduler.GetScheduleGroupInput, optFns ...func(*scheduler.Options)) (*scheduler.GetScheduleGroupOutput, error)
 	CreateScheduleGroup(ctx context.Context, in *scheduler.CreateScheduleGroupInput, optFns ...func(*scheduler.Options)) (*scheduler.CreateScheduleGroupOutput, error)
 	CreateSchedule(ctx context.Context, in *scheduler.CreateScheduleInput, optFns ...func(*scheduler.Options)) (*scheduler.CreateScheduleOutput, error)
@@ -34,9 +34,15 @@ type schedAPI interface {
 
 // Schedule has no per-item Tags field: EventBridge Scheduler exposes tags
 // only at the schedule-group level. Use Config.Tags (top-level) for tagging.
+//
+// GroupName, when non-empty, places this schedule in that group instead of
+// the config-level cfg.GroupName. Lets one config manage schedules across
+// multiple groups (e.g. shared cron jobs in one group, per-team schedules
+// in another).
 type Schedule struct {
 	Name                       string              `yaml:"name"`
 	Description                string              `yaml:"description,omitempty"`
+	GroupName                  string              `yaml:"groupName,omitempty"`
 	ScheduleExpression         string              `yaml:"scheduleExpression"`
 	ScheduleExpressionTimezone string              `yaml:"timezone,omitempty"`
 	State                      string              `yaml:"state,omitempty"` // ENABLED | DISABLED
@@ -46,6 +52,15 @@ type Schedule struct {
 	ActionAfterCompletion      string              `yaml:"actionAfterCompletion,omitempty"` // NONE | DELETE
 	FlexibleTimeWindow         *FlexibleTimeWindow `yaml:"flexibleTimeWindow,omitempty"`
 	Target                     *ScheduleTarget     `yaml:"target"`
+}
+
+// effectiveGroup returns the schedule's effective group: per-schedule
+// override if set, otherwise the config's GroupName (or "default").
+func (s *Schedule) effectiveGroup(cfg *Config) string {
+	if s.GroupName != "" {
+		return s.GroupName
+	}
+	return cfg.group()
 }
 
 type FlexibleTimeWindow struct {
@@ -140,6 +155,7 @@ func fromRemoteSchedule(s *scheduler.GetScheduleOutput) *Schedule {
 	out := &Schedule{
 		Name:                       aws.ToString(s.Name),
 		Description:                aws.ToString(s.Description),
+		GroupName:                  aws.ToString(s.GroupName),
 		ScheduleExpression:         aws.ToString(s.ScheduleExpression),
 		ScheduleExpressionTimezone: aws.ToString(s.ScheduleExpressionTimezone),
 		State:                      string(s.State),
@@ -234,60 +250,64 @@ func fromRemoteSchedTarget(t *schtypes.Target) *ScheduleTarget {
 	return st
 }
 
-// EventBridge Scheduler exposes tags only at the schedule-group level (the
-// TagResource API rejects per-schedule ARNs). All ebschedule tracking
-// therefore lives on the group; ownership is decided per-group, not
-// per-schedule.
-func listGroupTags(ctx context.Context, cli schedAPI, group string) (map[string]string, error) {
-	gg, err := cli.GetScheduleGroup(ctx, &scheduler.GetScheduleGroupInput{
-		Name: aws.String(group),
-	})
-	if err != nil {
-		return nil, err
-	}
-	resp, err := cli.ListTagsForResource(ctx, &scheduler.ListTagsForResourceInput{
-		ResourceArn: gg.Arn,
-	})
-	if err != nil {
-		return nil, err
-	}
-	out := map[string]string{}
-	for _, t := range resp.Tags {
-		out[aws.ToString(t.Key)] = aws.ToString(t.Value)
-	}
-	return out, nil
-}
-
 // --- diff ------------------------------------------------------------------
 
+// schedulesByGroup buckets cfg.Schedules by their effective group. Each
+// schedule in the returned map has GroupName populated for canonical YAML
+// comparison; the original *Schedule pointers are not mutated.
+func schedulesByGroup(cfg *Config) map[string][]*Schedule {
+	out := map[string][]*Schedule{}
+	for _, s := range cfg.Schedules {
+		g := s.effectiveGroup(cfg)
+		copied := *s
+		copied.GroupName = g
+		out[g] = append(out[g], &copied)
+	}
+	return out
+}
+
+// sortedGroups returns map keys sorted for deterministic output.
+func sortedGroups(byGroup map[string][]*Schedule) []string {
+	groups := make([]string, 0, len(byGroup))
+	for g := range byGroup {
+		groups = append(groups, g)
+	}
+	sort.Strings(groups)
+	return groups
+}
+
 // diffSchedules emits a unified diff per schedule to out and returns
-// whether any schedule has drift.
+// whether any schedule has drift. Schedules can specify their own group
+// via Schedule.GroupName, so we dump per-group.
 func diffSchedules(ctx context.Context, out io.Writer, cfg *Config) (bool, error) {
-	current, err := dumpSchedules(ctx, cfg.Region, cfg.group(), "")
-	if err != nil {
-		return false, err
-	}
-	cur := map[string]*Schedule{}
-	for _, s := range current {
-		cur[s.Name] = s
-	}
+	byGroup := schedulesByGroup(cfg)
 	drift := false
-	for _, want := range cfg.Schedules {
-		// Canonicalize the user side too so an explicit `timezone: UTC` (or
-		// other defaulted value) compares equal to a stripped remote view.
-		desiredYAML := mustYAML(canonicalizeSchedule(want))
-		got, ok := cur[want.Name]
-		if !ok {
-			fmt.Fprint(out, unifiedDiff("schedule:"+want.Name, "", desiredYAML))
+	for _, g := range sortedGroups(byGroup) {
+		current, err := dumpSchedules(ctx, cfg.Region, g, "")
+		if err != nil {
+			return false, err
+		}
+		cur := map[string]*Schedule{}
+		for _, s := range current {
+			cur[s.Name] = s
+		}
+		for _, want := range byGroup[g] {
+			// Canonicalize the user side too so an explicit `timezone: UTC` (or
+			// other defaulted value) compares equal to a stripped remote view.
+			desiredYAML := mustYAML(canonicalizeSchedule(want))
+			got, ok := cur[want.Name]
+			if !ok {
+				fmt.Fprint(out, unifiedDiff("schedule:"+want.Name, "", desiredYAML))
+				drift = true
+				continue
+			}
+			gotYAML := mustYAML(got)
+			if gotYAML == desiredYAML {
+				continue
+			}
+			fmt.Fprint(out, unifiedDiff("schedule:"+want.Name, gotYAML, desiredYAML))
 			drift = true
-			continue
 		}
-		gotYAML := mustYAML(got)
-		if gotYAML == desiredYAML {
-			continue
-		}
-		fmt.Fprint(out, unifiedDiff("schedule:"+want.Name, gotYAML, desiredYAML))
-		drift = true
 	}
 	return drift, nil
 }
@@ -303,50 +323,101 @@ func applySchedules(ctx context.Context, out io.Writer, cfg *Config, dryRun, pru
 }
 
 func applySchedulesWith(ctx context.Context, out io.Writer, cli schedAPI, cfg *Config, dryRun, prune bool) error {
-	group := cfg.group()
-	if err := ensureScheduleGroup(ctx, out, cli, group, cfg, dryRun); err != nil {
-		return fmt.Errorf("ensure schedule group %s: %w", group, err)
-	}
-	desired := map[string]bool{}
-	for _, s := range cfg.Schedules {
-		desired[s.Name] = true
-		if err := applyOneSchedule(ctx, out, cli, group, s, dryRun); err != nil {
-			return fmt.Errorf("schedule %s: %w", s.Name, err)
+	byGroup := schedulesByGroup(cfg)
+
+	for _, g := range sortedGroups(byGroup) {
+		if err := ensureScheduleGroup(ctx, out, cli, g, cfg, dryRun); err != nil {
+			return fmt.Errorf("ensure schedule group %s: %w", g, err)
+		}
+		for _, s := range byGroup[g] {
+			if err := applyOneSchedule(ctx, out, cli, g, s, dryRun); err != nil {
+				return fmt.Errorf("schedule %s: %w", s.Name, err)
+			}
 		}
 	}
+
 	if !prune {
 		return nil
 	}
 	if cfg.TrackingID == "" {
 		return fmt.Errorf("-prune requires trackingId in config (safety guard)")
 	}
-	tracked, err := isGroupTracked(ctx, cli, group, cfg.TrackingID)
+
+	// Prune scans every schedule-group in the account that carries our
+	// tracking-id, not just groups currently referenced by cfg.Schedules.
+	// Otherwise removing a schedule (and its now-unreferenced group) from
+	// the config would silently leave the orphan in AWS.
+	tracked, err := listTrackedGroups(ctx, cli, cfg.TrackingID)
 	if err != nil {
 		return err
 	}
-	if !tracked {
-		fmt.Fprintf(os.Stderr, "warning: schedule-group:%s lacks ebschedule-tracking-id=%s; skipping prune\n", group, cfg.TrackingID)
-		return nil
-	}
-	current, err := dumpSchedulesWith(ctx, cli, group, "")
-	if err != nil {
-		return err
-	}
-	for _, s := range current {
-		if desired[s.Name] {
-			continue
-		}
-		fmt.Fprintf(out, "- schedule:%s (delete)\n", s.Name)
-		if dryRun {
-			continue
-		}
-		if _, err := cli.DeleteSchedule(ctx, &scheduler.DeleteScheduleInput{
-			GroupName: aws.String(group), Name: aws.String(s.Name),
-		}); err != nil {
+	for _, g := range tracked {
+		current, err := dumpSchedulesWith(ctx, cli, g, "")
+		if err != nil {
 			return err
+		}
+		desiredInGroup := map[string]bool{}
+		for _, s := range byGroup[g] {
+			desiredInGroup[s.Name] = true
+		}
+		for _, s := range current {
+			if desiredInGroup[s.Name] {
+				continue
+			}
+			fmt.Fprintf(out, "- schedule:%s (delete from %s)\n", s.Name, g)
+			if dryRun {
+				continue
+			}
+			if _, err := cli.DeleteSchedule(ctx, &scheduler.DeleteScheduleInput{
+				GroupName: aws.String(g), Name: aws.String(s.Name),
+			}); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
+}
+
+// listTrackedGroups returns the names of every schedule-group whose tags
+// contain ebschedule-tracking-id=<trackingID>. Sorted for determinism.
+//
+// We use the ARN from ListScheduleGroups directly rather than calling
+// GetScheduleGroup, because GetScheduleGroup returns a nil Arn for the
+// special "default" group. ListScheduleGroups consistently returns ARNs
+// for all groups including "default".
+func listTrackedGroups(ctx context.Context, cli schedAPI, trackingID string) ([]string, error) {
+	var token *string
+	var out []string
+	for {
+		resp, err := cli.ListScheduleGroups(ctx, &scheduler.ListScheduleGroupsInput{NextToken: token})
+		if err != nil {
+			return nil, err
+		}
+		for _, g := range resp.ScheduleGroups {
+			arn := aws.ToString(g.Arn)
+			if arn == "" {
+				continue
+			}
+			tagResp, err := cli.ListTagsForResource(ctx, &scheduler.ListTagsForResourceInput{
+				ResourceArn: aws.String(arn),
+			})
+			if err != nil {
+				return nil, err
+			}
+			for _, t := range tagResp.Tags {
+				if aws.ToString(t.Key) == trackingTagKey && aws.ToString(t.Value) == trackingID {
+					out = append(out, aws.ToString(g.Name))
+					break
+				}
+			}
+		}
+		if resp.NextToken == nil {
+			break
+		}
+		token = resp.NextToken
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 // ensureScheduleGroup creates the group with cfg.Tags + tracking tag if it
@@ -532,16 +603,4 @@ func toAWSSchedTarget(t *ScheduleTarget) (*schtypes.Target, error) {
 		}
 	}
 	return at, nil
-}
-
-// isGroupTracked reports whether the given schedule group carries our
-// tracking tag. -prune for schedules is gated on group ownership: if the
-// group isn't ours, we never delete schedules in it (safety for groups
-// shared with Terraform/CDK).
-func isGroupTracked(ctx context.Context, cli schedAPI, group, trackingID string) (bool, error) {
-	tags, err := listGroupTags(ctx, cli, group)
-	if err != nil {
-		return false, err
-	}
-	return tags[trackingTagKey] == trackingID, nil
 }

@@ -284,6 +284,22 @@ func (f *fakeSched) addSchedule(group, name string) {
 	}
 }
 
+func (f *fakeSched) ListScheduleGroups(_ context.Context, _ *scheduler.ListScheduleGroupsInput, _ ...func(*scheduler.Options)) (*scheduler.ListScheduleGroupsOutput, error) {
+	out := &scheduler.ListScheduleGroupsOutput{}
+	names := make([]string, 0, len(f.groupTags))
+	for n := range f.groupTags {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		out.ScheduleGroups = append(out.ScheduleGroups, schtypes.ScheduleGroupSummary{
+			Name: aws.String(n),
+			Arn:  aws.String("arn:aws:scheduler:ap-northeast-1:1:schedule-group/" + n),
+		})
+	}
+	return out, nil
+}
+
 func (f *fakeSched) GetScheduleGroup(_ context.Context, in *scheduler.GetScheduleGroupInput, _ ...func(*scheduler.Options)) (*scheduler.GetScheduleGroupOutput, error) {
 	if _, ok := f.groupTags[*in.Name]; !ok {
 		return nil, &schtypes.ResourceNotFoundException{}
@@ -524,9 +540,11 @@ func captureStderr(t *testing.T, fn func()) string {
 	return <-done
 }
 
-func TestApplySchedulesWith_PruneSkipsUntrackedGroup(t *testing.T) {
+func TestApplySchedulesWith_PruneIgnoresUntrackedGroups(t *testing.T) {
 	f := newFakeSched()
 	// Group exists but lacks our tracking tag; treat as foreign-owned.
+	// Prune iterates ListScheduleGroups + filters by tracking tag, so this
+	// group simply won't be visited - no warning needed, just safety.
 	f.addGroup("foreign-group", map[string]string{"Owner": "terraform"})
 	f.addSchedule("foreign-group", "stranger")
 
@@ -536,17 +554,12 @@ func TestApplySchedulesWith_PruneSkipsUntrackedGroup(t *testing.T) {
 		Schedules:  []*Schedule{},
 	}
 
-	stderr := captureStderr(t, func() {
-		if err := applySchedulesWith(context.Background(), io.Discard, f, cfg, false, true); err != nil {
-			t.Fatal(err)
-		}
-	})
+	if err := applySchedulesWith(context.Background(), io.Discard, f, cfg, false, true); err != nil {
+		t.Fatal(err)
+	}
 
 	if len(f.deletedSchedules) != 0 {
 		t.Errorf("must not delete schedules in untracked group, got %v", f.deletedSchedules)
-	}
-	if !strings.Contains(stderr, "skipping prune") {
-		t.Errorf("expected skip-prune warning on stderr, got %q", stderr)
 	}
 	if _, ok := f.schedules["foreign-group"]["stranger"]; !ok {
 		t.Error("stranger schedule was deleted; safety violated")
@@ -608,6 +621,100 @@ func TestEnsureScheduleGroup_CreatesWithTrackingTag(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "+ schedule-group:new-group (create)") {
 		t.Errorf("create marker missing from output: %q", out.String())
+	}
+}
+
+func TestApplySchedulesWith_MultiGroup(t *testing.T) {
+	f := newFakeSched()
+	// Two pre-existing groups, both ours; the third group does not exist
+	// yet (will be created on apply).
+	f.addGroup("default", map[string]string{trackingTagKey: "my-app"})
+	f.addGroup("team-a", map[string]string{trackingTagKey: "my-app"})
+
+	cfg := &Config{
+		TrackingID: "my-app",
+		// Implicit cfg.GroupName is "" -> cfg.group() == "default".
+		Schedules: []*Schedule{
+			{
+				Name: "in-default",
+				// no GroupName; should land in cfg.group() == "default"
+				ScheduleExpression: "rate(1 hour)",
+				FlexibleTimeWindow: &FlexibleTimeWindow{Mode: "OFF"},
+				Target:             &ScheduleTarget{Arn: "arn:aws:lambda:1:1:function:x", RoleArn: "arn:aws:iam::1:role/r"},
+			},
+			{
+				Name:               "in-team-a",
+				GroupName:          "team-a",
+				ScheduleExpression: "rate(1 hour)",
+				FlexibleTimeWindow: &FlexibleTimeWindow{Mode: "OFF"},
+				Target:             &ScheduleTarget{Arn: "arn:aws:lambda:1:1:function:x", RoleArn: "arn:aws:iam::1:role/r"},
+			},
+			{
+				Name:               "in-fresh",
+				GroupName:          "fresh",
+				ScheduleExpression: "rate(1 hour)",
+				FlexibleTimeWindow: &FlexibleTimeWindow{Mode: "OFF"},
+				Target:             &ScheduleTarget{Arn: "arn:aws:lambda:1:1:function:x", RoleArn: "arn:aws:iam::1:role/r"},
+			},
+		},
+	}
+	var out bytes.Buffer
+	if err := applySchedulesWith(context.Background(), &out, f, cfg, false, false); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(f.createdGroups, []string{"fresh"}) {
+		t.Errorf("createdGroups = %v, want [fresh]", f.createdGroups)
+	}
+}
+
+func TestApplySchedulesWith_PrunePerGroup(t *testing.T) {
+	f := newFakeSched()
+	f.addGroup("default", map[string]string{trackingTagKey: "my-app"})
+	f.addGroup("team-a", map[string]string{trackingTagKey: "my-app"})
+	f.addGroup("team-foreign", map[string]string{"Owner": "terraform"}) // not ours
+
+	f.addSchedule("default", "stay")
+	f.addSchedule("default", "drop-default")
+	f.addSchedule("team-a", "stay-team-a")
+	f.addSchedule("team-a", "drop-team-a")
+	f.addSchedule("team-foreign", "stranger") // foreign, must not touch
+
+	cfg := &Config{
+		TrackingID: "my-app",
+		Schedules: []*Schedule{
+			{
+				Name:               "stay",
+				ScheduleExpression: "rate(1 hour)",
+				FlexibleTimeWindow: &FlexibleTimeWindow{Mode: "OFF"},
+				Target:             &ScheduleTarget{Arn: "arn:...", RoleArn: "arn:..."},
+			},
+			{
+				Name:               "stay-team-a",
+				GroupName:          "team-a",
+				ScheduleExpression: "rate(1 hour)",
+				FlexibleTimeWindow: &FlexibleTimeWindow{Mode: "OFF"},
+				Target:             &ScheduleTarget{Arn: "arn:...", RoleArn: "arn:..."},
+			},
+		},
+	}
+	stderr := captureStderr(t, func() {
+		if err := applySchedulesWith(context.Background(), io.Discard, f, cfg, false, true); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	sort.Strings(f.deletedSchedules)
+	want := []string{"drop-default", "drop-team-a"}
+	if !reflect.DeepEqual(f.deletedSchedules, want) {
+		t.Errorf("deletedSchedules = %v, want %v", f.deletedSchedules, want)
+	}
+	if _, ok := f.schedules["team-foreign"]["stranger"]; !ok {
+		t.Error("foreign group's stranger was deleted; safety violated")
+	}
+	// team-foreign isn't in the config so it shouldn't even be visited
+	// for prune, and therefore no warning should mention it.
+	if strings.Contains(stderr, "team-foreign") {
+		t.Errorf("must not scan foreign group not referenced by config: %q", stderr)
 	}
 }
 
