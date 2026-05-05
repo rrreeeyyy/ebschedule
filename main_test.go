@@ -99,6 +99,120 @@ rules:
 	})
 }
 
+func TestTargetFlag(t *testing.T) {
+	t.Run("Set parses kind:name", func(t *testing.T) {
+		var f targetFlag
+		if err := f.Set("rule:my-rule"); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.Set("schedule:my-sched"); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.Set("rule:other"); err != nil {
+			t.Fatal(err)
+		}
+		if !f.rules["my-rule"] || !f.rules["other"] || !f.schedules["my-sched"] {
+			t.Errorf("targetFlag = %+v", f)
+		}
+	})
+	t.Run("rejects missing colon", func(t *testing.T) {
+		var f targetFlag
+		if err := f.Set("plain-name"); err == nil {
+			t.Error("expected error for missing kind prefix")
+		}
+	})
+	t.Run("rejects unknown kind", func(t *testing.T) {
+		var f targetFlag
+		if err := f.Set("eventbus:default"); err == nil {
+			t.Error("expected error for unknown kind")
+		}
+	})
+	t.Run("rejects empty name", func(t *testing.T) {
+		var f targetFlag
+		if err := f.Set("rule:"); err == nil {
+			t.Error("expected error for empty name")
+		}
+	})
+}
+
+func TestTargetFlag_Filter(t *testing.T) {
+	cfg := &Config{
+		Rules: []*Rule{
+			{Name: "r1"}, {Name: "r2"}, {Name: "r3"},
+		},
+		Schedules: []*Schedule{
+			{Name: "s1"}, {Name: "s2"},
+		},
+	}
+	t.Run("inactive returns config unchanged", func(t *testing.T) {
+		var f targetFlag
+		got, err := f.filter(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != cfg {
+			t.Errorf("inactive filter must return same pointer")
+		}
+	})
+	t.Run("rule-only target nils Schedules", func(t *testing.T) {
+		var f targetFlag
+		_ = f.Set("rule:r2")
+		got, err := f.filter(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Schedules != nil {
+			t.Errorf("Schedules should be nil, got %v", got.Schedules)
+		}
+		if len(got.Rules) != 1 || got.Rules[0].Name != "r2" {
+			t.Errorf("Rules = %v, want [r2]", got.Rules)
+		}
+	})
+	t.Run("schedule-only target nils Rules", func(t *testing.T) {
+		var f targetFlag
+		_ = f.Set("schedule:s1")
+		got, err := f.filter(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Rules != nil {
+			t.Errorf("Rules should be nil, got %v", got.Rules)
+		}
+		if len(got.Schedules) != 1 || got.Schedules[0].Name != "s1" {
+			t.Errorf("Schedules = %v, want [s1]", got.Schedules)
+		}
+	})
+	t.Run("multiple kinds keeps both", func(t *testing.T) {
+		var f targetFlag
+		_ = f.Set("rule:r1")
+		_ = f.Set("rule:r3")
+		_ = f.Set("schedule:s2")
+		got, err := f.filter(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got.Rules) != 2 || len(got.Schedules) != 1 {
+			t.Errorf("got Rules=%v Schedules=%v", got.Rules, got.Schedules)
+		}
+	})
+	t.Run("unknown rule errors", func(t *testing.T) {
+		var f targetFlag
+		_ = f.Set("rule:nonexistent")
+		_, err := f.filter(cfg)
+		if err == nil || !strings.Contains(err.Error(), "rule:nonexistent not found") {
+			t.Errorf("expected not-found error, got %v", err)
+		}
+	})
+	t.Run("unknown schedule errors", func(t *testing.T) {
+		var f targetFlag
+		_ = f.Set("schedule:nope")
+		_, err := f.filter(cfg)
+		if err == nil || !strings.Contains(err.Error(), "schedule:nope not found") {
+			t.Errorf("expected not-found error, got %v", err)
+		}
+	})
+}
+
 func TestConfigBusGroup(t *testing.T) {
 	c := &Config{}
 	if got := c.bus(); got != "default" {
