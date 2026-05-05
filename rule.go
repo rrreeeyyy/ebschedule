@@ -12,6 +12,22 @@ import (
 	ebtypes "github.com/aws/aws-sdk-go-v2/service/eventbridge/types"
 )
 
+// ebAPI is the subset of *eventbridge.Client that ebschedule actually uses.
+// Defining it here lets tests inject a fake without standing up a real
+// AWS SDK client. *eventbridge.Client satisfies this interface implicitly.
+type ebAPI interface {
+	ListRules(ctx context.Context, in *eventbridge.ListRulesInput, optFns ...func(*eventbridge.Options)) (*eventbridge.ListRulesOutput, error)
+	ListTargetsByRule(ctx context.Context, in *eventbridge.ListTargetsByRuleInput, optFns ...func(*eventbridge.Options)) (*eventbridge.ListTargetsByRuleOutput, error)
+	ListTagsForResource(ctx context.Context, in *eventbridge.ListTagsForResourceInput, optFns ...func(*eventbridge.Options)) (*eventbridge.ListTagsForResourceOutput, error)
+	DescribeRule(ctx context.Context, in *eventbridge.DescribeRuleInput, optFns ...func(*eventbridge.Options)) (*eventbridge.DescribeRuleOutput, error)
+	PutRule(ctx context.Context, in *eventbridge.PutRuleInput, optFns ...func(*eventbridge.Options)) (*eventbridge.PutRuleOutput, error)
+	PutTargets(ctx context.Context, in *eventbridge.PutTargetsInput, optFns ...func(*eventbridge.Options)) (*eventbridge.PutTargetsOutput, error)
+	RemoveTargets(ctx context.Context, in *eventbridge.RemoveTargetsInput, optFns ...func(*eventbridge.Options)) (*eventbridge.RemoveTargetsOutput, error)
+	TagResource(ctx context.Context, in *eventbridge.TagResourceInput, optFns ...func(*eventbridge.Options)) (*eventbridge.TagResourceOutput, error)
+	UntagResource(ctx context.Context, in *eventbridge.UntagResourceInput, optFns ...func(*eventbridge.Options)) (*eventbridge.UntagResourceOutput, error)
+	DeleteRule(ctx context.Context, in *eventbridge.DeleteRuleInput, optFns ...func(*eventbridge.Options)) (*eventbridge.DeleteRuleOutput, error)
+}
+
 // --- types -----------------------------------------------------------------
 
 type Rule struct {
@@ -71,6 +87,10 @@ func dumpRules(ctx context.Context, region, bus, prefix string) ([]*Rule, error)
 	if err != nil {
 		return nil, err
 	}
+	return dumpRulesWith(ctx, cli, bus, prefix)
+}
+
+func dumpRulesWith(ctx context.Context, cli ebAPI, bus, prefix string) ([]*Rule, error) {
 	var out []*Rule
 	var token *string
 	for {
@@ -122,7 +142,7 @@ func fromRemoteRule(r ebtypes.Rule) *Rule {
 	}
 }
 
-func listRuleTargets(ctx context.Context, cli *eventbridge.Client, bus, ruleName string) ([]*Target, error) {
+func listRuleTargets(ctx context.Context, cli ebAPI, bus, ruleName string) ([]*Target, error) {
 	resp, err := cli.ListTargetsByRule(ctx, &eventbridge.ListTargetsByRuleInput{
 		Rule:         aws.String(ruleName),
 		EventBusName: aws.String(bus),
@@ -138,7 +158,7 @@ func listRuleTargets(ctx context.Context, cli *eventbridge.Client, bus, ruleName
 	return out, nil
 }
 
-func listRuleTags(ctx context.Context, cli *eventbridge.Client, ruleArn string) (map[string]string, error) {
+func listRuleTags(ctx context.Context, cli ebAPI, ruleArn string) (map[string]string, error) {
 	resp, err := cli.ListTagsForResource(ctx, &eventbridge.ListTagsForResourceInput{
 		ResourceARN: aws.String(ruleArn),
 	})
@@ -231,11 +251,15 @@ func diffRules(ctx context.Context, cfg *Config) (bool, error) {
 // --- apply -----------------------------------------------------------------
 
 func applyRules(ctx context.Context, cfg *Config, dryRun, prune bool) error {
-	bus := cfg.bus()
 	cli, err := newEBClient(ctx, cfg.Region)
 	if err != nil {
 		return err
 	}
+	return applyRulesWith(ctx, cli, cfg, dryRun, prune)
+}
+
+func applyRulesWith(ctx context.Context, cli ebAPI, cfg *Config, dryRun, prune bool) error {
+	bus := cfg.bus()
 	desired := map[string]bool{}
 	for _, r := range cfg.Rules {
 		desired[r.Name] = true
@@ -249,7 +273,7 @@ func applyRules(ctx context.Context, cfg *Config, dryRun, prune bool) error {
 	if cfg.TrackingID == "" {
 		return fmt.Errorf("-prune requires trackingId in config (safety guard)")
 	}
-	current, err := dumpRules(ctx, cfg.Region, bus, "")
+	current, err := dumpRulesWith(ctx, cli, bus, "")
 	if err != nil {
 		return err
 	}
@@ -278,7 +302,7 @@ func applyRules(ctx context.Context, cfg *Config, dryRun, prune bool) error {
 // fetchCurrentRule returns the canonical view of a rule (with targets and
 // tracking-tag-stripped tags) for diff-vs-apply comparison. exists=false
 // means the rule doesn't exist yet.
-func fetchCurrentRule(ctx context.Context, cli *eventbridge.Client, bus, name string) (snap *Rule, arn string, exists bool, err error) {
+func fetchCurrentRule(ctx context.Context, cli ebAPI, bus, name string) (snap *Rule, arn string, exists bool, err error) {
 	desc, err := cli.DescribeRule(ctx, &eventbridge.DescribeRuleInput{
 		Name: aws.String(name), EventBusName: aws.String(bus),
 	})
@@ -314,7 +338,7 @@ func fetchCurrentRule(ctx context.Context, cli *eventbridge.Client, bus, name st
 	return snap, arn, true, nil
 }
 
-func applyOneRule(ctx context.Context, cli *eventbridge.Client, bus string, cfg *Config, r *Rule, dryRun bool) error {
+func applyOneRule(ctx context.Context, cli ebAPI, bus string, cfg *Config, r *Rule, dryRun bool) error {
 	current, currentArn, exists, err := fetchCurrentRule(ctx, cli, bus, r.Name)
 	if err != nil {
 		return err
@@ -483,7 +507,7 @@ func toAWSTarget(t *Target) ebtypes.Target {
 	return at
 }
 
-func isRuleTracked(ctx context.Context, cli *eventbridge.Client, bus, name, trackingID string) (bool, error) {
+func isRuleTracked(ctx context.Context, cli ebAPI, bus, name, trackingID string) (bool, error) {
 	desc, err := cli.DescribeRule(ctx, &eventbridge.DescribeRuleInput{
 		Name: aws.String(name), EventBusName: aws.String(bus),
 	})
@@ -497,7 +521,7 @@ func isRuleTracked(ctx context.Context, cli *eventbridge.Client, bus, name, trac
 	return tags[trackingTagKey] == trackingID, nil
 }
 
-func deleteRule(ctx context.Context, cli *eventbridge.Client, bus, name string) error {
+func deleteRule(ctx context.Context, cli ebAPI, bus, name string) error {
 	tgts, err := listRuleTargets(ctx, cli, bus, name)
 	if err != nil {
 		return err
