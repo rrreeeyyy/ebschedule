@@ -13,6 +13,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -31,6 +32,26 @@ import (
 // trackingTagKey marks resources managed by ebschedule. -prune only deletes
 // resources carrying this tag with the trackingId from the same config.
 const trackingTagKey = "ebschedule-tracking-id"
+
+// version is set via ldflags at release time (see .goreleaser.yaml).
+// "dev" is the default for local builds.
+var version = "dev"
+
+// errNoConfigFiles is returned by expandFiles when nothing matched. runDump
+// checks for it to softly fall through when the user just runs `dump` without
+// a pre-existing config (the bootstrap case).
+var errNoConfigFiles = errors.New("no config files match")
+
+// Exit codes:
+//
+//	0  success / clean
+//	1  error
+//	2  diff found (terraform-plan style; only `diff` uses this)
+const (
+	exitOK    = 0
+	exitErr   = 1
+	exitDrift = 2
+)
 
 // Config is the single config file format covering both Rules and Schedules.
 //
@@ -81,29 +102,41 @@ type DeadLetterConfig struct {
 
 func main() {
 	var (
-		confPath string
-		dryRun   bool
-		prune    bool
+		confPath    string
+		dryRun      bool
+		prune       bool
+		showVersion bool
 	)
 	flag.StringVar(&confPath, "conf", "ebschedule.yaml", "config file or glob (e.g. 'config/*.yaml')")
 	flag.BoolVar(&dryRun, "dry-run", false, "do not actually apply")
 	flag.BoolVar(&prune, "prune", false, "delete tracked resources absent from config")
+	flag.BoolVar(&showVersion, "version", false, "print version and exit")
 	flag.Usage = func() {
 		fmt.Fprintln(os.Stderr, `usage:
   ebschedule [-conf FILE_OR_GLOB] [-dry-run] [-prune] <dump|diff|apply|validate> [name-prefix]
   ebschedule import-ecschedule [-in FILE] [-account NUM] [-region REGION] [-tracking-id ID]
+  ebschedule -version
 
 Config files run through text/template before YAML parsing. Funcs:
   {{ env "X" }}         empty if X is unset
   {{ must_env "X" }}    errors if X is unset
-  {{ ssm "/p/k" }}      SSM Parameter Store value (decrypted)`)
+  {{ ssm "/p/k" }}      SSM Parameter Store value (decrypted)
+
+Exit codes:
+  0  success / no drift
+  1  error
+  2  diff found (only emitted by 'diff')`)
 		flag.PrintDefaults()
 	}
 	flag.Parse()
+	if showVersion {
+		fmt.Println("ebschedule", version)
+		os.Exit(exitOK)
+	}
 	args := flag.Args()
 	if len(args) == 0 {
 		flag.Usage()
-		os.Exit(2)
+		os.Exit(exitErr)
 	}
 	ctx := context.Background()
 	switch args[0] {
@@ -116,16 +149,24 @@ Config files run through text/template before YAML parsing. Funcs:
 	case "diff":
 		cfgs, err := loadConfigs(confPath)
 		check(err)
+		drift := false
 		for _, cfg := range cfgs {
 			if len(cfgs) > 1 {
 				fmt.Printf("# %s\n", cfg.sourcePath)
 			}
 			if cfg.Rules != nil {
-				check(diffRules(ctx, cfg))
+				d, err := diffRules(ctx, cfg)
+				check(err)
+				drift = drift || d
 			}
 			if cfg.Schedules != nil {
-				check(diffSchedules(ctx, cfg))
+				d, err := diffSchedules(ctx, cfg)
+				check(err)
+				drift = drift || d
 			}
+		}
+		if drift {
+			os.Exit(exitDrift)
 		}
 	case "apply":
 		cfgs, err := loadConfigs(confPath)
@@ -149,7 +190,7 @@ Config files run through text/template before YAML parsing. Funcs:
 		importEcschedule(args[1:])
 	default:
 		flag.Usage()
-		os.Exit(2)
+		os.Exit(exitErr)
 	}
 }
 
@@ -162,9 +203,17 @@ func check(err error) {
 
 // runDump always emits a single Config with both rules: and schedules:.
 // Bus/group hints are taken from the first matching config file if present.
+//
+// If confPath does not exist (the bootstrap case), runDump falls through
+// using AWS defaults. Other load errors (parse / template / strict YAML)
+// are surfaced so typos can't be silently swallowed.
 func runDump(ctx context.Context, confPath, prefix string) error {
 	region, bus, group := "", "default", "default"
-	if cfgs, err := loadConfigs(confPath); err == nil && len(cfgs) > 0 {
+	cfgs, err := loadConfigs(confPath)
+	if err != nil && !errors.Is(err, errNoConfigFiles) {
+		return err
+	}
+	if err == nil && len(cfgs) > 0 {
 		region = cfgs[0].Region
 		if cfgs[0].EventBusName != "" {
 			bus = cfgs[0].EventBusName
@@ -209,7 +258,7 @@ func expandFiles(pattern string, funcs template.FuncMap) ([]expandedFile, error)
 	}
 	if len(paths) == 0 {
 		if _, err := os.Stat(pattern); err != nil {
-			return nil, fmt.Errorf("no config files match: %s", pattern)
+			return nil, fmt.Errorf("%w: %s", errNoConfigFiles, pattern)
 		}
 		paths = []string{pattern}
 	}

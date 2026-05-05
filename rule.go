@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -195,15 +196,18 @@ func fromRemoteTarget(t ebtypes.Target) *Target {
 
 // --- diff ------------------------------------------------------------------
 
-func diffRules(ctx context.Context, cfg *Config) error {
+// diffRules emits a unified diff per rule and returns whether any rule has
+// drift. Drift = a desired rule is missing remotely or differs from remote.
+func diffRules(ctx context.Context, cfg *Config) (bool, error) {
 	current, err := dumpRules(ctx, cfg.Region, cfg.bus(), "")
 	if err != nil {
-		return err
+		return false, err
 	}
 	cur := map[string]*Rule{}
 	for _, r := range current {
 		cur[r.Name] = r
 	}
+	drift := false
 	for _, want := range cfg.Rules {
 		desired := *want
 		desired.Tags = mergeTags(cfg.Tags, want.Tags)
@@ -211,6 +215,7 @@ func diffRules(ctx context.Context, cfg *Config) error {
 		got, ok := cur[want.Name]
 		if !ok {
 			fmt.Print(unifiedDiff("rule:"+want.Name, "", desiredYAML))
+			drift = true
 			continue
 		}
 		gotYAML := mustYAML(got)
@@ -218,8 +223,9 @@ func diffRules(ctx context.Context, cfg *Config) error {
 			continue
 		}
 		fmt.Print(unifiedDiff("rule:"+want.Name, gotYAML, desiredYAML))
+		drift = true
 	}
-	return nil
+	return drift, nil
 }
 
 // --- apply -----------------------------------------------------------------
@@ -269,11 +275,68 @@ func applyRules(ctx context.Context, cfg *Config, dryRun, prune bool) error {
 	return nil
 }
 
+// fetchCurrentRule returns the canonical view of a rule (with targets and
+// tracking-tag-stripped tags) for diff-vs-apply comparison. exists=false
+// means the rule doesn't exist yet.
+func fetchCurrentRule(ctx context.Context, cli *eventbridge.Client, bus, name string) (snap *Rule, arn string, exists bool, err error) {
+	desc, err := cli.DescribeRule(ctx, &eventbridge.DescribeRuleInput{
+		Name: aws.String(name), EventBusName: aws.String(bus),
+	})
+	if err != nil {
+		var nf *ebtypes.ResourceNotFoundException
+		if errors.As(err, &nf) {
+			return nil, "", false, nil
+		}
+		return nil, "", false, err
+	}
+	arn = aws.ToString(desc.Arn)
+	snap = fromRemoteRule(ebtypes.Rule{
+		Name:               desc.Name,
+		Description:        desc.Description,
+		ScheduleExpression: desc.ScheduleExpression,
+		EventPattern:       desc.EventPattern,
+		State:              desc.State,
+		RoleArn:            desc.RoleArn,
+	})
+	targets, err := listRuleTargets(ctx, cli, bus, name)
+	if err != nil {
+		return nil, "", false, err
+	}
+	snap.Targets = targets
+	tags, err := listRuleTags(ctx, cli, arn)
+	if err != nil {
+		return nil, "", false, err
+	}
+	delete(tags, trackingTagKey)
+	if len(tags) > 0 {
+		snap.Tags = tags
+	}
+	return snap, arn, true, nil
+}
+
 func applyOneRule(ctx context.Context, cli *eventbridge.Client, bus string, cfg *Config, r *Rule, dryRun bool) error {
-	fmt.Printf("+ rule:%s (apply)\n", r.Name)
+	current, currentArn, exists, err := fetchCurrentRule(ctx, cli, bus, r.Name)
+	if err != nil {
+		return err
+	}
+	desired := *r
+	desired.Tags = mergeTags(cfg.Tags, r.Tags)
+	desiredYAML := mustYAML(&desired)
+
+	switch {
+	case !exists:
+		fmt.Printf("+ rule:%s (create)\n", r.Name)
+	default:
+		if mustYAML(current) == desiredYAML {
+			fmt.Printf("= rule:%s (no-op)\n", r.Name)
+			return nil
+		}
+		fmt.Printf("~ rule:%s (update)\n", r.Name)
+	}
 	if dryRun {
 		return nil
 	}
+
 	state := ebtypes.RuleStateEnabled
 	if strings.EqualFold(r.State, "DISABLED") {
 		state = ebtypes.RuleStateDisabled
@@ -296,37 +359,35 @@ func applyOneRule(ctx context.Context, cli *eventbridge.Client, bus string, cfg 
 		in.RoleArn = aws.String(r.RoleArn)
 	}
 	// Tags are reconciled below; PutRule.Tags is create-only, so skipping it.
-	if _, err := cli.PutRule(ctx, in); err != nil {
-		return err
-	}
-	desc, err := cli.DescribeRule(ctx, &eventbridge.DescribeRuleInput{
-		Name: aws.String(r.Name), EventBusName: aws.String(bus),
-	})
+	putOut, err := cli.PutRule(ctx, in)
 	if err != nil {
 		return err
 	}
-	current, err := listRuleTags(ctx, cli, *desc.Arn)
+	if currentArn == "" {
+		currentArn = aws.ToString(putOut.RuleArn)
+	}
+	currentTagMap, err := listRuleTags(ctx, cli, currentArn)
 	if err != nil {
 		return err
 	}
-	desired := mergeTags(cfg.Tags, r.Tags)
+	desiredTags := mergeTags(cfg.Tags, r.Tags)
 	setFn := func(tags map[string]string) error {
 		awsTags := make([]ebtypes.Tag, 0, len(tags))
 		for k, v := range tags {
 			awsTags = append(awsTags, ebtypes.Tag{Key: aws.String(k), Value: aws.String(v)})
 		}
 		_, err := cli.TagResource(ctx, &eventbridge.TagResourceInput{
-			ResourceARN: desc.Arn, Tags: awsTags,
+			ResourceARN: aws.String(currentArn), Tags: awsTags,
 		})
 		return err
 	}
 	unsetFn := func(keys []string) error {
 		_, err := cli.UntagResource(ctx, &eventbridge.UntagResourceInput{
-			ResourceARN: desc.Arn, TagKeys: keys,
+			ResourceARN: aws.String(currentArn), TagKeys: keys,
 		})
 		return err
 	}
-	if err := reconcileTags(current, desired, cfg.TrackingID, setFn, unsetFn); err != nil {
+	if err := reconcileTags(currentTagMap, desiredTags, cfg.TrackingID, setFn, unsetFn); err != nil {
 		return err
 	}
 	// Sync targets.

@@ -20,6 +20,29 @@ func writeTempYAML(t *testing.T, body string) string {
 	return p
 }
 
+func TestExpandFiles_MissingFileSentinelError(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "does-not-exist.yaml")
+	_, err := expandFiles(missing, runtimeFuncs())
+	if err == nil {
+		t.Fatal("expected error for missing file")
+	}
+	if !errors.Is(err, errNoConfigFiles) {
+		t.Errorf("expected errNoConfigFiles sentinel, got %v", err)
+	}
+}
+
+func TestExpandFiles_TemplateErrorIsNotMissingSentinel(t *testing.T) {
+	// A parse error must NOT match errNoConfigFiles, so runDump won't swallow it.
+	p := writeTempYAML(t, `x: {{ env \"X\" }}`)
+	_, err := expandFiles(p, runtimeFuncs())
+	if err == nil {
+		t.Fatal("expected template parse error")
+	}
+	if errors.Is(err, errNoConfigFiles) {
+		t.Errorf("template error must not be classified as missing-file: %v", err)
+	}
+}
+
 func TestLoadConfigs_StrictUnknownField(t *testing.T) {
 	t.Run("unknown top-level field rejected", func(t *testing.T) {
 		p := writeTempYAML(t, `

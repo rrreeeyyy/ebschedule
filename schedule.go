@@ -236,15 +236,18 @@ func listGroupTags(ctx context.Context, cli *scheduler.Client, group string) (ma
 
 // --- diff ------------------------------------------------------------------
 
-func diffSchedules(ctx context.Context, cfg *Config) error {
+// diffSchedules emits a unified diff per schedule and returns whether any
+// schedule has drift.
+func diffSchedules(ctx context.Context, cfg *Config) (bool, error) {
 	current, err := dumpSchedules(ctx, cfg.Region, cfg.group(), "")
 	if err != nil {
-		return err
+		return false, err
 	}
 	cur := map[string]*Schedule{}
 	for _, s := range current {
 		cur[s.Name] = s
 	}
+	drift := false
 	for _, want := range cfg.Schedules {
 		// Canonicalize the user side too so an explicit `timezone: UTC` (or
 		// other defaulted value) compares equal to a stripped remote view.
@@ -254,6 +257,7 @@ func diffSchedules(ctx context.Context, cfg *Config) error {
 		got, ok := cur[want.Name]
 		if !ok {
 			fmt.Print(unifiedDiff("schedule:"+want.Name, "", desiredYAML))
+			drift = true
 			continue
 		}
 		gotYAML := mustYAML(got)
@@ -261,8 +265,9 @@ func diffSchedules(ctx context.Context, cfg *Config) error {
 			continue
 		}
 		fmt.Print(unifiedDiff("schedule:"+want.Name, gotYAML, desiredYAML))
+		drift = true
 	}
-	return nil
+	return drift, nil
 }
 
 // --- apply -----------------------------------------------------------------
@@ -360,10 +365,36 @@ func ensureScheduleGroup(ctx context.Context, cli *scheduler.Client, group strin
 }
 
 func applyOneSchedule(ctx context.Context, cli *scheduler.Client, group string, s *Schedule, dryRun bool) error {
-	fmt.Printf("+ schedule:%s (apply)\n", s.Name)
+	got, err := cli.GetSchedule(ctx, &scheduler.GetScheduleInput{
+		GroupName: aws.String(group), Name: aws.String(s.Name),
+	})
+	exists := true
+	if err != nil {
+		var nf *schtypes.ResourceNotFoundException
+		if !errors.As(err, &nf) {
+			return err
+		}
+		exists = false
+	}
+
+	canonicalizeSchedule(s)
+	desiredYAML := mustYAML(s)
+
+	switch {
+	case !exists:
+		fmt.Printf("+ schedule:%s (create)\n", s.Name)
+	default:
+		current := fromRemoteSchedule(got)
+		if mustYAML(current) == desiredYAML {
+			fmt.Printf("= schedule:%s (no-op)\n", s.Name)
+			return nil
+		}
+		fmt.Printf("~ schedule:%s (update)\n", s.Name)
+	}
 	if dryRun {
 		return nil
 	}
+
 	target, err := toAWSSchedTarget(s.Target)
 	if err != nil {
 		return err
@@ -386,17 +417,6 @@ func applyOneSchedule(ctx context.Context, cli *scheduler.Client, group string, 
 		if s.FlexibleTimeWindow.MaximumWindowInMinutes > 0 {
 			ftw.MaximumWindowInMinutes = aws.Int32(s.FlexibleTimeWindow.MaximumWindowInMinutes)
 		}
-	}
-
-	exists := true
-	if _, err := cli.GetSchedule(ctx, &scheduler.GetScheduleInput{
-		GroupName: aws.String(group), Name: aws.String(s.Name),
-	}); err != nil {
-		var nf *schtypes.ResourceNotFoundException
-		if !errors.As(err, &nf) {
-			return err
-		}
-		exists = false
 	}
 
 	if exists {
