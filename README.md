@@ -1,108 +1,180 @@
 # ebschedule
 
-A small declarative CLI for managing **Amazon EventBridge Rules** and
-**EventBridge Scheduler Schedules** from a single YAML config. Inspired by
-[Songmu/ecschedule](https://github.com/Songmu/ecschedule), generalized to
-arbitrary targets and to both EventBridge services.
+Declarative CLI for managing **Amazon EventBridge Rules** and **EventBridge
+Scheduler Schedules** from a single YAML config. Inspired by
+[Songmu/ecschedule](https://github.com/Songmu/ecschedule); generalized to
+arbitrary target types (not just ECS RunTask) and to both EventBridge
+services.
 
-## Build
+One binary, one YAML, one CLI — `dump` / `diff` / `apply` / `validate` plus
+an `import-ecschedule` converter.
+
+## Install
 
 ```sh
-go mod tidy
+go install github.com/rrreeeyyy/ebschedule@latest
+```
+
+Or build from source:
+
+```sh
 go build -o ebschedule .
 ```
 
-## Use
+## Quick start
 
 ```sh
-ebschedule -conf ebschedule.yaml validate                      # offline structural check
-ebschedule -conf ebschedule.yaml dump my-app- > ebschedule.yaml
-ebschedule -conf ebschedule.yaml diff
-ebschedule -conf ebschedule.yaml apply -dry-run
-ebschedule -conf ebschedule.yaml apply -prune
+# bootstrap a config from what's already in AWS
+ebschedule dump my-app- > ebschedule.yaml
 
-# Multiple files (e.g. one per service / team)
-ebschedule -conf 'config/*.yaml' validate
+# offline structural check (no AWS calls)
+ebschedule -conf ebschedule.yaml validate
+
+# preview what would change
+ebschedule -conf ebschedule.yaml diff
+
+# apply (dry-run, then real)
+ebschedule -conf ebschedule.yaml -dry-run apply
+ebschedule -conf ebschedule.yaml apply
+
+# apply + prune resources you previously managed but removed from config
+ebschedule -conf ebschedule.yaml -prune apply
+
+# multi-file (e.g. one per service / team)
 ebschedule -conf 'config/*.yaml' apply -prune
 ```
 
-The single CLI handles both Rules and Schedules. Whether each is processed
-depends on whether the corresponding section appears in the YAML:
+See [`ebschedule.yaml`](./ebschedule.yaml) for an example covering both
+Rules and Schedules.
 
-| YAML state         | Behavior                                                            |
-| ------------------ | ------------------------------------------------------------------- |
-| `rules:` omitted   | ebschedule does not touch Rules at all (incl. no prune)                 |
-| `rules: []`        | ebschedule manages Rules; with `-prune`, deletes every tracked Rule     |
-| `rules: [..items]` | ebschedule manages those items                                          |
-| same for `schedules:` | same                                                            |
+## Subcommands
 
-## Templating
+| Command              | Reads AWS | Mutates AWS | Notes                                              |
+| -------------------- | :-------: | :---------: | -------------------------------------------------- |
+| `validate`           |     —     |      —      | Offline structural check; exits non-zero on errors |
+| `dump [prefix]`      |     ✓     |      —      | Emit YAML reflecting current AWS state             |
+| `diff`               |     ✓     |      —      | Unified-diff per resource, current vs desired      |
+| `apply` (`-dry-run`) |     ✓     |    `-dry-run` skips it    | Create / update                |
+| `apply -prune`       |     ✓     |      ✓      | Also delete tracked resources missing from config  |
+| `import-ecschedule`  |     —     |      —      | Convert an ecschedule YAML to ebschedule format    |
 
-Config files run through `text/template` before YAML parsing:
+## Config semantics: omitted vs. empty
 
-| Func                 | Notes                                              |
-| -------------------- | -------------------------------------------------- |
-| `{{ env "X" }}`      | Empty if `X` is unset                              |
-| `{{ must_env "X" }}` | Errors if `X` is unset                             |
-| `{{ ssm "/p/k" }}`   | SSM Parameter Store (decrypted, region from creds) |
+| YAML state              | Behavior                                                       |
+| ----------------------- | -------------------------------------------------------------- |
+| `rules:` omitted        | ebschedule never touches Rules (incl. no prune)                |
+| `rules: []`             | ebschedule manages Rules; with `-prune`, deletes every tracked |
+| `rules: [...items]`     | ebschedule manages exactly those items                         |
+| `schedules:` — same     | same                                                           |
 
-## Tags
+This lets one tool manage Rules without disturbing Schedules (and vice
+versa), or split ownership across multiple config files.
 
-Top-level `tags:` applies to every rule and schedule. Per-resource `tags:`
-override. On `apply`, ebschedule reconciles tags fully — adding missing ones and
-removing tags present remotely that aren't in the desired set. The internal
-`ebschedule-tracking-id` tag is always preserved when `trackingId` is set.
+## Tagging model
 
-## Diff
+| Resource              | Where tags live       | Source in YAML                                      |
+| --------------------- | --------------------- | --------------------------------------------------- |
+| EventBridge Rule      | per-rule              | top-level `tags:` ∪ per-rule `tags:` (latter wins)  |
+| Scheduler Schedule    | none (API limitation) | —                                                   |
+| Scheduler Group       | per-group             | top-level `tags:` (set at group create)             |
 
-Unified-diff (git-style) output per resource, comparing remote vs desired
-YAML. The internal tracking tag is hidden from comparison.
+EventBridge Scheduler exposes tags only at the schedule-group level, so
+ebschedule tags the group itself. There's no per-schedule `tags:` field.
+
+On `apply`, ebschedule reconciles Rule tags fully: adds missing, removes
+remote tags absent from desired. Existing schedule groups are **never**
+mutated (ebschedule only sets tags when creating a group), so groups
+shared with Terraform / CDK aren't disturbed.
 
 ## Prune safety
 
-`-prune` deletes only resources carrying
+`-prune` is scoped via the `ebschedule-tracking-id` tag.
 
+- A `trackingId:` is **required** in YAML; without it `-prune` is rejected.
+- For **Rules**: only Rules whose tag matches the configured `trackingId`
+  are eligible. Resources created by other tools (Terraform, CDK, console)
+  remain untouched.
+- For **Schedules**: ebschedule first checks the schedule **group** itself
+  for the tracking tag. If absent, prune is skipped with a stderr warning
+  — even if the config asks for an empty `schedules: []`. This protects
+  groups shared between ebschedule and other tools.
+
+A typical pattern:
+
+```yaml
+trackingId: my-app   # any stable string
+groupName: my-app    # ebschedule-owned group
 ```
-ebschedule-tracking-id = <trackingId>
+
+## Templating
+
+Config files run through `text/template` **before** YAML parsing:
+
+| Func                 | Notes                                                  |
+| -------------------- | ------------------------------------------------------ |
+| `{{ env "X" }}`      | Empty string if `X` is unset                           |
+| `{{ must_env "X" }}` | Errors out (or placeholder under `validate`)           |
+| `{{ ssm "/p/k" }}`   | SSM Parameter Store, decrypted, region from AWS creds  |
+
+Under `validate`, AWS is never called: `ssm` returns `<ssm:/path>` and
+`must_env` falls back to `<env:NAME>` so the structural check works
+offline.
+
+## Diff
+
+Unified-diff (git-style) per resource, comparing remote vs desired YAML.
+
+For Schedules, the comparison strips Scheduler's documented defaults
+(`timezone: UTC`, `actionAfterCompletion: NONE`, `retryPolicy: {185, 86400}`)
+on both sides, so a YAML that explicitly writes those defaults still
+shows as no-op.
+
+The internal `ebschedule-tracking-id` tag is hidden from diff.
+
+## Strict YAML
+
+Unknown fields fail with a line-numbered error rather than being
+silently dropped. A typo like `tag:` instead of `tags:` is caught at
+load time across `validate` / `dump` / `diff` / `apply`.
+
+## Multi-file configs
+
+`-conf` accepts a glob (`-conf 'config/*.yaml'`). Each matched file is
+loaded as an independent `Config`. Useful for splitting per-service
+ownership while keeping prune scopes isolated.
+
+## `import-ecschedule`
+
+Convert an existing ecschedule YAML to ebschedule format:
+
+```sh
+ebschedule import-ecschedule -in ecschedule.yaml -account 123456789012 \
+  -tracking-id my-app > ebschedule.yaml
 ```
 
-so it can never wipe rules / schedules created by other tools / stacks.
-`trackingId` must be set in the YAML, otherwise `-prune` is rejected.
-
-## Validate (offline)
-
-`ebschedule validate` checks structure without hitting AWS:
-
-- Required fields, name regex, max-length, unique names / target IDs
-- Mutually-exclusive `scheduleExpression` vs `eventPattern`, valid `cron(...)`/`rate(...)`/`at(...)` form
-- `eventPattern` and `target.input` are valid JSON
-- Enum fields (`state`, `actionAfterCompletion`, `flexibleTimeWindow.mode`, `assignPublicIp`, `launchType`)
-- Schedule `timezone` is a real IANA name
-- `startDate` / `endDate` parse as RFC3339
-- Tag keys/values within AWS limits and not reserved
-- ECS target taskDefinitionArn presence
-
-In validate mode, `ssm` is stubbed (`<ssm:/path>`) and `must_env` falls back to a
-placeholder so it works fully offline. Exit code is non-zero if any problems
-are found.
-
-## Schedule groups
-
-If `groupName:` refers to a group that doesn't exist yet, `apply` creates it
-on the fly, propagating top-level `tags:` and the tracking tag. The `default`
-group always exists and is skipped. Existing groups are left untouched —
-ebschedule does not reconcile or delete schedule groups.
+- ECS RunTask targets are emitted as EventBridge Rule targets with
+  `ecsParameters`.
+- `containerOverrides` is encoded into the target's `input` JSON.
+- If `-account` is not given and `AWS_ACCOUNT_ID` is unset, the converter
+  emits a `{{ must_env "AWS_ACCOUNT_ID" }}` placeholder so a single
+  config can be reused across accounts.
 
 ## Files
 
-- `main.go` — CLI dispatch, unified `Config`, template/SSM helpers, tag reconciliation
+- `main.go` — CLI dispatch, `Config`, template / SSM helpers, tag reconciliation
 - `rule.go` — EventBridge Rule operations
-- `schedule.go` — EventBridge Scheduler operations (incl. group auto-create)
+- `schedule.go` — EventBridge Scheduler operations + group auto-create
 - `validate.go` — offline structural validation
-- `ebschedule.yaml` — example with both rules and schedules
+- `import.go` — ecschedule → ebschedule converter
+- `ebschedule.yaml` — example covering Rules + Schedules
 
 ## Extend
 
-To support more target shapes, add a field to the relevant `Target` /
-`ScheduleTarget`, copy from remote in `fromRemote*`, and copy to AWS SDK type
-in `toAWS*`. That's the entire pattern.
+To support more target shapes, add a field to the relevant
+`Target` / `ScheduleTarget`, copy in `fromRemote*` (read), and copy in
+`toAWS*` (write). The pattern is small and consistent across both
+services.
+
+## License
+
+MIT. See [LICENSE](./LICENSE).
