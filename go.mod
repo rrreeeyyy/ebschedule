@@ -1,6 +1,6 @@
 module github.com/rrreeeyyy/ebschedule
 
-go 1.22
+go 1.25.0
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.30.5
@@ -9,6 +9,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/scheduler v1.10.5
 	github.com/aws/aws-sdk-go-v2/service/ssm v1.52.4
 	github.com/pmezard/go-difflib v1.0.0
+	golang.org/x/term v0.42.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -26,4 +27,5 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sts v1.30.3 // indirect
 	github.com/aws/smithy-go v1.20.4 // indirect
 	github.com/jmespath/go-jmespath v0.4.0 // indirect
+	golang.org/x/sys v0.43.0 // indirect
 )

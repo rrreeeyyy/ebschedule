@@ -84,14 +84,21 @@ func newEBClient(ctx context.Context, region string) (*eventbridge.Client, error
 // --- dump ------------------------------------------------------------------
 
 func dumpRules(ctx context.Context, region, bus, prefix string) ([]*Rule, error) {
+	return dumpRulesFiltered(ctx, region, bus, prefix, "")
+}
+
+// dumpRulesFiltered behaves like dumpRules but drops Rules whose
+// ebschedule-tracking-id tag does not equal trackingIDFilter (when
+// non-empty).
+func dumpRulesFiltered(ctx context.Context, region, bus, prefix, trackingIDFilter string) ([]*Rule, error) {
 	cli, err := newEBClient(ctx, region)
 	if err != nil {
 		return nil, err
 	}
-	return dumpRulesWith(ctx, cli, bus, prefix)
+	return dumpRulesWith(ctx, cli, bus, prefix, trackingIDFilter)
 }
 
-func dumpRulesWith(ctx context.Context, cli ebAPI, bus, prefix string) ([]*Rule, error) {
+func dumpRulesWith(ctx context.Context, cli ebAPI, bus, prefix, trackingIDFilter string) ([]*Rule, error) {
 	var out []*Rule
 	var token *string
 	for {
@@ -107,16 +114,19 @@ func dumpRulesWith(ctx context.Context, cli ebAPI, bus, prefix string) ([]*Rule,
 			return nil, err
 		}
 		for _, r := range resp.Rules {
+			tags, err := listRuleTags(ctx, cli, *r.Arn)
+			if err != nil {
+				return nil, err
+			}
+			if trackingIDFilter != "" && tags[trackingTagKey] != trackingIDFilter {
+				continue
+			}
 			rule := fromRemoteRule(r)
 			tgts, err := listRuleTargets(ctx, cli, bus, *r.Name)
 			if err != nil {
 				return nil, err
 			}
 			rule.Targets = tgts
-			tags, err := listRuleTags(ctx, cli, *r.Arn)
-			if err != nil {
-				return nil, err
-			}
 			delete(tags, trackingTagKey)
 			if len(tags) > 0 {
 				rule.Tags = tags
@@ -274,7 +284,7 @@ func applyRulesWith(ctx context.Context, out io.Writer, cli ebAPI, cfg *Config, 
 	if cfg.TrackingID == "" {
 		return fmt.Errorf("-prune requires trackingId in config (safety guard)")
 	}
-	current, err := dumpRulesWith(ctx, cli, bus, "")
+	current, err := dumpRulesWith(ctx, cli, bus, "", "")
 	if err != nil {
 		return err
 	}

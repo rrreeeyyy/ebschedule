@@ -361,6 +361,79 @@ func (f *fakeSched) UntagResource(_ context.Context, _ *scheduler.UntagResourceI
 	return nil, errors.New("Scheduler.UntagResource should not be called per-schedule")
 }
 
+// --- dump filter tests -----------------------------------------------------
+
+func TestDumpRulesWith_TrackingIDFilter(t *testing.T) {
+	f := newFakeEB()
+	f.addRule("mine", map[string]string{trackingTagKey: "my-app"}, "tgt")
+	f.addRule("foreign", map[string]string{"Owner": "terraform"}, "tgt")
+	f.addRule("wrong", map[string]string{trackingTagKey: "different-app"}, "tgt")
+
+	t.Run("empty filter returns everything", func(t *testing.T) {
+		got, err := dumpRulesWith(context.Background(), f, "default", "", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 3 {
+			t.Errorf("len = %d, want 3", len(got))
+		}
+	})
+
+	t.Run("filter restricts to matching tracking tag", func(t *testing.T) {
+		got, err := dumpRulesWith(context.Background(), f, "default", "", "my-app")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 1 || got[0].Name != "mine" {
+			t.Errorf("got %v, want [mine] only", got)
+		}
+		// Tracking tag itself must not appear in the dumped Tags map.
+		if got[0].Tags[trackingTagKey] != "" {
+			t.Errorf("tracking tag should be stripped from emitted Tags, got %v", got[0].Tags)
+		}
+	})
+
+	t.Run("filter mismatched yields empty", func(t *testing.T) {
+		got, err := dumpRulesWith(context.Background(), f, "default", "", "nobody")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 0 {
+			t.Errorf("got %d, want 0", len(got))
+		}
+	})
+}
+
+// --- confirmApply tests ----------------------------------------------------
+
+func TestConfirmApply(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{"yes lowercase", "yes\n", true},
+		{"yes with whitespace", "  yes  \n", true},
+		{"y is not enough", "y\n", false},
+		{"no", "no\n", false},
+		{"empty line", "\n", false},
+		{"YES uppercase rejected (intentional strict match)", "YES\n", false},
+		{"eof returns false", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var prompt bytes.Buffer
+			got := confirmApply(&prompt, strings.NewReader(tc.in))
+			if got != tc.want {
+				t.Errorf("confirmApply(%q) = %v, want %v", tc.in, got, tc.want)
+			}
+			if !strings.Contains(prompt.String(), "Type 'yes' to continue") {
+				t.Errorf("prompt missing expected text: %q", prompt.String())
+			}
+		})
+	}
+}
+
 // --- Schedule prune tests --------------------------------------------------
 
 func captureStderr(t *testing.T, fn func()) string {
