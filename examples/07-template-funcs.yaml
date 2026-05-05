@@ -26,10 +26,10 @@ rules:
       - id: lambda
         arn: arn:aws:lambda:ap-northeast-1:{{ must_env "AWS_ACCOUNT_ID" }}:function:my-app-runner
         # SSM-backed secret materialized into the target input on apply.
-        # Under `validate`, this expands to `<ssm:/my-app/slack/token>` so
-        # validate works fully offline.
-        input: |
-          {
-            "slackToken": "{{ ssm "/my-app/slack/token" }}",
-            "stage": "{{ env "STAGE" }}"
-          }
+        # Under `validate`, ssm expands to `<ssm:/my-app/slack/token>` and
+        # env to "" if STAGE isn't set, so validate works fully offline.
+        # `input` accepts a YAML mapping; ebschedule serializes to canonical
+        # JSON internally.
+        input:
+          slackToken: '{{ ssm "/my-app/slack/token" }}'
+          stage: '{{ env "STAGE" }}'

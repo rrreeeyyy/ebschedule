@@ -197,7 +197,7 @@ func convertEcschedule(src *ecsConfig, account, trackingID string) *Config {
 		target.EcsParameters = ep
 
 		if len(r.Target.ContainerOverrides) > 0 {
-			target.Input = buildContainerOverridesInput(r.Target.ContainerOverrides)
+			target.Input = jsonField(buildContainerOverridesInput(r.Target.ContainerOverrides))
 		}
 
 		rule.Targets = []*Target{target}

@@ -140,6 +140,26 @@ Unknown fields fail with a line-numbered error rather than being
 silently dropped. A typo like `tag:` instead of `tags:` is caught at
 load time across `validate` / `dump` / `diff` / `apply`.
 
+## JSON-shaped fields
+
+`Rule.eventPattern` and `target.input` are JSON documents on the AWS
+side. ebschedule accepts either form in YAML:
+
+```yaml
+# structured (recommended; readable, no escaping)
+eventPattern:
+  source: [aws.s3]
+  detail-type: [Object Created]
+
+# legacy raw-JSON-string (still supported)
+eventPattern: '{"source":["aws.s3"],"detail-type":["Object Created"]}'
+```
+
+Internally, both forms are normalized to canonical JSON (compact, sorted
+keys) so `diff` is whitespace- and key-order-insensitive between user
+input and what AWS returns. `dump` emits the structured form on the way
+out, so a `dump | edit | apply` round-trip stays readable.
+
 ## Multi-file configs
 
 `-conf` accepts a glob (`-conf 'config/*.yaml'`). Each matched file is

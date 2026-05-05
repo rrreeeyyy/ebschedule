@@ -126,7 +126,7 @@ func TestConvertEcschedule(t *testing.T) {
 		if tgt.EcsParameters.AssignPublicIp != "DISABLED" {
 			t.Errorf("AssignPublicIp = %q", tgt.EcsParameters.AssignPublicIp)
 		}
-		if !strings.Contains(tgt.Input, "containerOverrides") {
+		if !strings.Contains(string(tgt.Input), "containerOverrides") {
 			t.Errorf("Input missing containerOverrides: %s", tgt.Input)
 		}
 		// Input must be valid JSON.

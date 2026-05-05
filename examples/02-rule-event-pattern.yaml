@@ -13,16 +13,15 @@ trackingId: examples-02
 rules:
   - name: example-on-s3-upload
     description: Process new S3 objects through Step Functions
-    eventPattern: |
-      {
-        "source": ["aws.s3"],
-        "detail-type": ["Object Created"],
-        "detail": {
-          "bucket": {
-            "name": ["my-uploads"]
-          }
-        }
-      }
+    # `eventPattern` accepts either a JSON-string (legacy) or a YAML mapping.
+    # Internally ebschedule normalizes both to canonical JSON before sending
+    # to AWS, so structured-form is the more readable choice.
+    eventPattern:
+      source: [aws.s3]
+      detail-type: [Object Created]
+      detail:
+        bucket:
+          name: [my-uploads]
     state: ENABLED
     targets:
       - id: process

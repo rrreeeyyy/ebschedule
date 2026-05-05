@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 func writeTempYAML(t *testing.T, body string) string {
@@ -97,6 +99,122 @@ rules:
 			t.Errorf("unexpected cfgs: %+v", cfgs)
 		}
 	})
+}
+
+func TestJSONField_RoundTripScalar(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string // canonical form expected
+	}{
+		{"compact JSON", `{"a":1,"b":2}`, `{"a":1,"b":2}`},
+		{"unsorted keys get sorted", `{"b":2,"a":1}`, `{"a":1,"b":2}`},
+		{"whitespace stripped", `{ "a" : 1 ,  "b": 2 }`, `{"a":1,"b":2}`},
+		{"nested + array", `{"src":["x","y"],"d":{"k":"v"}}`, `{"d":{"k":"v"},"src":["x","y"]}`},
+		{"empty", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var holder struct {
+				F jsonField `yaml:"f"`
+			}
+			yamlIn := "f: '" + strings.ReplaceAll(tc.in, "'", "''") + "'"
+			if tc.in == "" {
+				yamlIn = "f: ''"
+			}
+			if err := yaml.Unmarshal([]byte(yamlIn), &holder); err != nil {
+				t.Fatal(err)
+			}
+			if string(holder.F) != tc.want {
+				t.Errorf("got %q, want %q", string(holder.F), tc.want)
+			}
+		})
+	}
+}
+
+func TestJSONField_StructuredYAMLToCanonicalJSON(t *testing.T) {
+	yamlIn := `f:
+  source: [aws.s3]
+  detail-type: [Object Created]
+  detail:
+    bucket:
+      name: [my-bucket]
+`
+	var holder struct {
+		F jsonField `yaml:"f"`
+	}
+	if err := yaml.Unmarshal([]byte(yamlIn), &holder); err != nil {
+		t.Fatal(err)
+	}
+	want := `{"detail":{"bucket":{"name":["my-bucket"]}},"detail-type":["Object Created"],"source":["aws.s3"]}`
+	if string(holder.F) != want {
+		t.Errorf("got %q\nwant %q", string(holder.F), want)
+	}
+}
+
+func TestJSONField_MarshalEmitsStructured(t *testing.T) {
+	holder := struct {
+		F jsonField `yaml:"f"`
+	}{F: `{"k":"v","arr":[1,2]}`}
+	out, err := yaml.Marshal(holder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(out)
+	// Should be structured (multi-line), not a quoted JSON string.
+	if !strings.Contains(got, "k: v") || !strings.Contains(got, "- 1") {
+		t.Errorf("marshal didn't produce structured YAML:\n%s", got)
+	}
+}
+
+func TestJSONField_InvalidJSONStoredVerbatim(t *testing.T) {
+	// validate.go relies on this so it can flag bad JSON to the user.
+	yamlIn := `f: "{not valid"`
+	var holder struct {
+		F jsonField `yaml:"f"`
+	}
+	if err := yaml.Unmarshal([]byte(yamlIn), &holder); err != nil {
+		t.Fatal(err)
+	}
+	if string(holder.F) != "{not valid" {
+		t.Errorf("invalid JSON should be stored verbatim, got %q", string(holder.F))
+	}
+}
+
+func TestJSONField_RoundTripParseRender(t *testing.T) {
+	// Parse structured YAML, marshal back; the result should also parse back
+	// to the same canonical string.
+	in := `f:
+  source: [aws.s3]
+  detail:
+    state: [running]
+`
+	var holder1 struct {
+		F jsonField `yaml:"f"`
+	}
+	if err := yaml.Unmarshal([]byte(in), &holder1); err != nil {
+		t.Fatal(err)
+	}
+	out, err := yaml.Marshal(holder1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var holder2 struct {
+		F jsonField `yaml:"f"`
+	}
+	if err := yaml.Unmarshal(out, &holder2); err != nil {
+		t.Fatal(err)
+	}
+	if string(holder1.F) != string(holder2.F) {
+		t.Errorf("round-trip changed canonical form:\n  before: %q\n  after:  %q", holder1.F, holder2.F)
+	}
+}
+
+func TestJSONFieldFromAWS_Canonicalizes(t *testing.T) {
+	got := jsonFieldFromAWS(`{"b":2, "a":1}`)
+	if string(got) != `{"a":1,"b":2}` {
+		t.Errorf("got %q, want canonical sorted", string(got))
+	}
 }
 
 func TestTargetFlag(t *testing.T) {
