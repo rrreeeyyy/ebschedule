@@ -43,15 +43,21 @@ type Rule struct {
 }
 
 type Target struct {
-	ID               string             `yaml:"id"`
-	Arn              string             `yaml:"arn"`
-	RoleArn          string             `yaml:"roleArn,omitempty"`
-	Input            string             `yaml:"input,omitempty"`
-	InputPath        string             `yaml:"inputPath,omitempty"`
-	InputTransformer *InputTransformer  `yaml:"inputTransformer,omitempty"`
-	RetryPolicy      *RetryPolicy       `yaml:"retryPolicy,omitempty"`
-	DeadLetterConfig *DeadLetterConfig  `yaml:"deadLetterConfig,omitempty"`
-	EcsParameters    *RuleEcsParameters `yaml:"ecsParameters,omitempty"`
+	ID                          string                       `yaml:"id"`
+	Arn                         string                       `yaml:"arn"`
+	RoleArn                     string                       `yaml:"roleArn,omitempty"`
+	Input                       string                       `yaml:"input,omitempty"`
+	InputPath                   string                       `yaml:"inputPath,omitempty"`
+	InputTransformer            *InputTransformer            `yaml:"inputTransformer,omitempty"`
+	RetryPolicy                 *RetryPolicy                 `yaml:"retryPolicy,omitempty"`
+	DeadLetterConfig            *DeadLetterConfig            `yaml:"deadLetterConfig,omitempty"`
+	EcsParameters               *RuleEcsParameters           `yaml:"ecsParameters,omitempty"`
+	SqsParameters               *SqsParameters               `yaml:"sqsParameters,omitempty"`
+	KinesisParameters           *RuleKinesisParameters       `yaml:"kinesisParameters,omitempty"`
+	BatchParameters             *BatchParameters             `yaml:"batchParameters,omitempty"`
+	RedshiftDataParameters      *RedshiftDataParameters      `yaml:"redshiftDataParameters,omitempty"`
+	SageMakerPipelineParameters *SageMakerPipelineParameters `yaml:"sageMakerPipelineParameters,omitempty"`
+	HttpParameters              *HttpParameters              `yaml:"httpParameters,omitempty"`
 }
 
 type InputTransformer struct {
@@ -69,6 +75,41 @@ type RuleEcsParameters struct {
 	AssignPublicIp    string   `yaml:"assignPublicIp,omitempty"`
 	Group             string   `yaml:"group,omitempty"`
 	PropagateTags     string   `yaml:"propagateTags,omitempty"` // TASK_DEFINITION
+}
+
+// RuleKinesisParameters is the EventBridge Rule shape: a JSON path used to
+// pull the partition key from the event payload (Scheduler uses a literal
+// PartitionKey instead).
+type RuleKinesisParameters struct {
+	PartitionKeyPath string `yaml:"partitionKeyPath"`
+}
+
+// BatchParameters launches an AWS Batch job. ArraySize / RetryAttempts map
+// to nested ArrayProperties / RetryStrategy in the SDK type.
+type BatchParameters struct {
+	JobDefinition string `yaml:"jobDefinition"`
+	JobName       string `yaml:"jobName"`
+	ArraySize     int32  `yaml:"arraySize,omitempty"`
+	RetryAttempts int32  `yaml:"retryAttempts,omitempty"`
+}
+
+// RedshiftDataParameters runs a SQL statement via the Redshift Data API.
+// Auth is via DbUser (IAM) or SecretManagerArn (Secrets Manager).
+type RedshiftDataParameters struct {
+	Database         string   `yaml:"database"`
+	DbUser           string   `yaml:"dbUser,omitempty"`
+	SecretManagerArn string   `yaml:"secretManagerArn,omitempty"`
+	Sql              string   `yaml:"sql,omitempty"`
+	Sqls             []string `yaml:"sqls,omitempty"`
+	StatementName    string   `yaml:"statementName,omitempty"`
+	WithEvent        bool     `yaml:"withEvent,omitempty"`
+}
+
+// HttpParameters configures an EventBridge API Destination invocation.
+type HttpParameters struct {
+	HeaderParameters      map[string]string `yaml:"headerParameters,omitempty"`
+	PathParameterValues   []string          `yaml:"pathParameterValues,omitempty"`
+	QueryStringParameters map[string]string `yaml:"queryStringParameters,omitempty"`
 }
 
 // --- client ----------------------------------------------------------------
@@ -231,6 +272,55 @@ func fromRemoteTarget(t ebtypes.Target) *Target {
 			ep.AssignPublicIp = string(nc.AwsvpcConfiguration.AssignPublicIp)
 		}
 		tgt.EcsParameters = ep
+	}
+	if t.SqsParameters != nil {
+		tgt.SqsParameters = &SqsParameters{MessageGroupId: aws.ToString(t.SqsParameters.MessageGroupId)}
+	}
+	if t.KinesisParameters != nil {
+		tgt.KinesisParameters = &RuleKinesisParameters{
+			PartitionKeyPath: aws.ToString(t.KinesisParameters.PartitionKeyPath),
+		}
+	}
+	if t.BatchParameters != nil {
+		bp := &BatchParameters{
+			JobDefinition: aws.ToString(t.BatchParameters.JobDefinition),
+			JobName:       aws.ToString(t.BatchParameters.JobName),
+		}
+		if t.BatchParameters.ArrayProperties != nil {
+			bp.ArraySize = t.BatchParameters.ArrayProperties.Size
+		}
+		if t.BatchParameters.RetryStrategy != nil {
+			bp.RetryAttempts = t.BatchParameters.RetryStrategy.Attempts
+		}
+		tgt.BatchParameters = bp
+	}
+	if t.RedshiftDataParameters != nil {
+		tgt.RedshiftDataParameters = &RedshiftDataParameters{
+			Database:         aws.ToString(t.RedshiftDataParameters.Database),
+			DbUser:           aws.ToString(t.RedshiftDataParameters.DbUser),
+			SecretManagerArn: aws.ToString(t.RedshiftDataParameters.SecretManagerArn),
+			Sql:              aws.ToString(t.RedshiftDataParameters.Sql),
+			Sqls:             t.RedshiftDataParameters.Sqls,
+			StatementName:    aws.ToString(t.RedshiftDataParameters.StatementName),
+			WithEvent:        t.RedshiftDataParameters.WithEvent,
+		}
+	}
+	if t.SageMakerPipelineParameters != nil {
+		smp := &SageMakerPipelineParameters{}
+		for _, p := range t.SageMakerPipelineParameters.PipelineParameterList {
+			smp.PipelineParameterList = append(smp.PipelineParameterList, SageMakerPipelineParameter{
+				Name:  aws.ToString(p.Name),
+				Value: aws.ToString(p.Value),
+			})
+		}
+		tgt.SageMakerPipelineParameters = smp
+	}
+	if t.HttpParameters != nil {
+		tgt.HttpParameters = &HttpParameters{
+			HeaderParameters:      t.HttpParameters.HeaderParameters,
+			PathParameterValues:   t.HttpParameters.PathParameterValues,
+			QueryStringParameters: t.HttpParameters.QueryStringParameters,
+		}
 	}
 	return tgt
 }
@@ -524,6 +614,57 @@ func toAWSTarget(t *Target) ebtypes.Target {
 			}
 		}
 		at.EcsParameters = ep
+	}
+	if t.SqsParameters != nil {
+		at.SqsParameters = &ebtypes.SqsParameters{
+			MessageGroupId: nilIfEmpty(t.SqsParameters.MessageGroupId),
+		}
+	}
+	if t.KinesisParameters != nil {
+		at.KinesisParameters = &ebtypes.KinesisParameters{
+			PartitionKeyPath: aws.String(t.KinesisParameters.PartitionKeyPath),
+		}
+	}
+	if t.BatchParameters != nil {
+		bp := &ebtypes.BatchParameters{
+			JobDefinition: aws.String(t.BatchParameters.JobDefinition),
+			JobName:       aws.String(t.BatchParameters.JobName),
+		}
+		if t.BatchParameters.ArraySize > 0 {
+			bp.ArrayProperties = &ebtypes.BatchArrayProperties{Size: t.BatchParameters.ArraySize}
+		}
+		if t.BatchParameters.RetryAttempts > 0 {
+			bp.RetryStrategy = &ebtypes.BatchRetryStrategy{Attempts: t.BatchParameters.RetryAttempts}
+		}
+		at.BatchParameters = bp
+	}
+	if t.RedshiftDataParameters != nil {
+		at.RedshiftDataParameters = &ebtypes.RedshiftDataParameters{
+			Database:         aws.String(t.RedshiftDataParameters.Database),
+			DbUser:           nilIfEmpty(t.RedshiftDataParameters.DbUser),
+			SecretManagerArn: nilIfEmpty(t.RedshiftDataParameters.SecretManagerArn),
+			Sql:              nilIfEmpty(t.RedshiftDataParameters.Sql),
+			Sqls:             t.RedshiftDataParameters.Sqls,
+			StatementName:    nilIfEmpty(t.RedshiftDataParameters.StatementName),
+			WithEvent:        t.RedshiftDataParameters.WithEvent,
+		}
+	}
+	if t.SageMakerPipelineParameters != nil {
+		smp := &ebtypes.SageMakerPipelineParameters{}
+		for _, p := range t.SageMakerPipelineParameters.PipelineParameterList {
+			smp.PipelineParameterList = append(smp.PipelineParameterList, ebtypes.SageMakerPipelineParameter{
+				Name:  aws.String(p.Name),
+				Value: aws.String(p.Value),
+			})
+		}
+		at.SageMakerPipelineParameters = smp
+	}
+	if t.HttpParameters != nil {
+		at.HttpParameters = &ebtypes.HttpParameters{
+			HeaderParameters:      t.HttpParameters.HeaderParameters,
+			PathParameterValues:   t.HttpParameters.PathParameterValues,
+			QueryStringParameters: t.HttpParameters.QueryStringParameters,
+		}
 	}
 	return at
 }

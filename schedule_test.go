@@ -33,6 +33,14 @@ func fullScheduleTarget() *ScheduleTarget {
 		SqsParameters: &SqsParameters{
 			MessageGroupId: "g1",
 		},
+		KinesisParameters: &SchedKinesisParameters{
+			PartitionKey: "literal-key",
+		},
+		SageMakerPipelineParameters: &SageMakerPipelineParameters{
+			PipelineParameterList: []SageMakerPipelineParameter{
+				{Name: "p1", Value: "v1"},
+			},
+		},
 		EventBridgeParameters: &EventBridgeParameters{
 			DetailType: "MyEvent",
 			Source:     "my.app",

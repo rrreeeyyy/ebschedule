@@ -69,14 +69,16 @@ type FlexibleTimeWindow struct {
 }
 
 type ScheduleTarget struct {
-	Arn                   string                 `yaml:"arn"`
-	RoleArn               string                 `yaml:"roleArn"`
-	Input                 string                 `yaml:"input,omitempty"`
-	DeadLetterConfig      *DeadLetterConfig      `yaml:"deadLetterConfig,omitempty"`
-	RetryPolicy           *RetryPolicy           `yaml:"retryPolicy,omitempty"`
-	EcsParameters         *SchedEcsParameters    `yaml:"ecsParameters,omitempty"`
-	SqsParameters         *SqsParameters         `yaml:"sqsParameters,omitempty"`
-	EventBridgeParameters *EventBridgeParameters `yaml:"eventBridgeParameters,omitempty"`
+	Arn                         string                       `yaml:"arn"`
+	RoleArn                     string                       `yaml:"roleArn"`
+	Input                       string                       `yaml:"input,omitempty"`
+	DeadLetterConfig            *DeadLetterConfig            `yaml:"deadLetterConfig,omitempty"`
+	RetryPolicy                 *RetryPolicy                 `yaml:"retryPolicy,omitempty"`
+	EcsParameters               *SchedEcsParameters          `yaml:"ecsParameters,omitempty"`
+	SqsParameters               *SqsParameters               `yaml:"sqsParameters,omitempty"`
+	KinesisParameters           *SchedKinesisParameters      `yaml:"kinesisParameters,omitempty"`
+	SageMakerPipelineParameters *SageMakerPipelineParameters `yaml:"sageMakerPipelineParameters,omitempty"`
+	EventBridgeParameters       *EventBridgeParameters       `yaml:"eventBridgeParameters,omitempty"`
 }
 
 type SchedEcsParameters struct {
@@ -89,8 +91,10 @@ type SchedEcsParameters struct {
 	AssignPublicIp    string   `yaml:"assignPublicIp,omitempty"`
 }
 
-type SqsParameters struct {
-	MessageGroupId string `yaml:"messageGroupId,omitempty"`
+// SchedKinesisParameters is the Scheduler shape: a literal partition key
+// (Rules use a JSON path instead).
+type SchedKinesisParameters struct {
+	PartitionKey string `yaml:"partitionKey"`
 }
 
 type EventBridgeParameters struct {
@@ -240,6 +244,21 @@ func fromRemoteSchedTarget(t *schtypes.Target) *ScheduleTarget {
 	}
 	if t.SqsParameters != nil {
 		st.SqsParameters = &SqsParameters{MessageGroupId: aws.ToString(t.SqsParameters.MessageGroupId)}
+	}
+	if t.KinesisParameters != nil {
+		st.KinesisParameters = &SchedKinesisParameters{
+			PartitionKey: aws.ToString(t.KinesisParameters.PartitionKey),
+		}
+	}
+	if t.SageMakerPipelineParameters != nil {
+		smp := &SageMakerPipelineParameters{}
+		for _, p := range t.SageMakerPipelineParameters.PipelineParameterList {
+			smp.PipelineParameterList = append(smp.PipelineParameterList, SageMakerPipelineParameter{
+				Name:  aws.ToString(p.Name),
+				Value: aws.ToString(p.Value),
+			})
+		}
+		st.SageMakerPipelineParameters = smp
 	}
 	if t.EventBridgeParameters != nil {
 		st.EventBridgeParameters = &EventBridgeParameters{
@@ -595,6 +614,21 @@ func toAWSSchedTarget(t *ScheduleTarget) (*schtypes.Target, error) {
 		at.SqsParameters = &schtypes.SqsParameters{
 			MessageGroupId: nilIfEmpty(t.SqsParameters.MessageGroupId),
 		}
+	}
+	if t.KinesisParameters != nil {
+		at.KinesisParameters = &schtypes.KinesisParameters{
+			PartitionKey: aws.String(t.KinesisParameters.PartitionKey),
+		}
+	}
+	if t.SageMakerPipelineParameters != nil {
+		smp := &schtypes.SageMakerPipelineParameters{}
+		for _, p := range t.SageMakerPipelineParameters.PipelineParameterList {
+			smp.PipelineParameterList = append(smp.PipelineParameterList, schtypes.SageMakerPipelineParameter{
+				Name:  aws.String(p.Name),
+				Value: aws.String(p.Value),
+			})
+		}
+		at.SageMakerPipelineParameters = smp
 	}
 	if t.EventBridgeParameters != nil {
 		at.EventBridgeParameters = &schtypes.EventBridgeParameters{

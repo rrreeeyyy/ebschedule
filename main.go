@@ -104,6 +104,25 @@ type DeadLetterConfig struct {
 	Arn string `yaml:"arn"`
 }
 
+// SqsParameters carries the FIFO MessageGroupId for an SQS target. Used by
+// both EventBridge Rules and Scheduler Schedules.
+type SqsParameters struct {
+	MessageGroupId string `yaml:"messageGroupId,omitempty"`
+}
+
+// SageMakerPipelineParameters supplies pipeline parameters when invoking a
+// SageMaker pipeline as a target. Same shape on Rules and Schedules.
+type SageMakerPipelineParameters struct {
+	PipelineParameterList []SageMakerPipelineParameter `yaml:"pipelineParameterList,omitempty"`
+}
+
+// SageMakerPipelineParameter is one (Name, Value) pair in
+// SageMakerPipelineParameters.PipelineParameterList.
+type SageMakerPipelineParameter struct {
+	Name  string `yaml:"name"`
+	Value string `yaml:"value"`
+}
+
 // --- main ------------------------------------------------------------------
 
 // tagFilterFlag implements flag.Value for repeatable `-tag KEY=VALUE`. The

@@ -174,6 +174,56 @@ func TestValidateRule_Targets(t *testing.T) {
 		wantSubstr(t, errs, "ecsParameters.launchType")
 		wantSubstr(t, errs, "ecsParameters.assignPublicIp")
 	})
+	t.Run("kinesis missing partitionKeyPath", func(t *testing.T) {
+		r := validRule()
+		r.Targets[0].KinesisParameters = &RuleKinesisParameters{}
+		wantSubstr(t, validateRule(r, "rule[0]:x"), "kinesisParameters.partitionKeyPath")
+	})
+	t.Run("batch missing jobDefinition / jobName", func(t *testing.T) {
+		r := validRule()
+		r.Targets[0].BatchParameters = &BatchParameters{}
+		errs := validateRule(r, "rule[0]:x")
+		wantSubstr(t, errs, "batchParameters.jobDefinition")
+		wantSubstr(t, errs, "batchParameters.jobName")
+	})
+	t.Run("redshift missing database / sql", func(t *testing.T) {
+		r := validRule()
+		r.Targets[0].RedshiftDataParameters = &RedshiftDataParameters{}
+		errs := validateRule(r, "rule[0]:x")
+		wantSubstr(t, errs, "redshiftDataParameters.database")
+		wantSubstr(t, errs, "must set either sql or sqls")
+	})
+	t.Run("redshift sql + sqls mutually exclusive", func(t *testing.T) {
+		r := validRule()
+		r.Targets[0].RedshiftDataParameters = &RedshiftDataParameters{
+			Database: "db",
+			Sql:      "SELECT 1",
+			Sqls:     []string{"SELECT 2"},
+		}
+		wantSubstr(t, validateRule(r, "rule[0]:x"), "mutually exclusive")
+	})
+	t.Run("sagemaker pipeline param missing name", func(t *testing.T) {
+		r := validRule()
+		r.Targets[0].SageMakerPipelineParameters = &SageMakerPipelineParameters{
+			PipelineParameterList: []SageMakerPipelineParameter{{Value: "v"}},
+		}
+		wantSubstr(t, validateRule(r, "rule[0]:x"), "pipelineParameterList[0].name")
+	})
+}
+
+func TestValidateSchedule_NewTargetParameters(t *testing.T) {
+	t.Run("kinesis missing partitionKey", func(t *testing.T) {
+		s := validSchedule()
+		s.Target.KinesisParameters = &SchedKinesisParameters{}
+		wantSubstr(t, validateSchedule(s, "schedule[0]:x"), "kinesisParameters.partitionKey")
+	})
+	t.Run("sagemaker pipeline param missing name", func(t *testing.T) {
+		s := validSchedule()
+		s.Target.SageMakerPipelineParameters = &SageMakerPipelineParameters{
+			PipelineParameterList: []SageMakerPipelineParameter{{Value: "v"}},
+		}
+		wantSubstr(t, validateSchedule(s, "schedule[0]:x"), "pipelineParameterList[0].name")
+	})
 }
 
 func TestValidateSchedule(t *testing.T) {
