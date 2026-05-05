@@ -1,0 +1,71 @@
+region: ap-northeast-1
+trackingId: my-app
+
+# Tags applied to every rule and schedule (per-item tags override).
+tags:
+  Service: my-app
+  Env: '{{ env "ENV" }}'
+  ManagedBy: ebschedule
+
+# eventBusName: default   # for rules; default if omitted
+# groupName:    default   # for schedules; default if omitted
+
+rules:
+  # schedule -> Lambda
+  - name: my-app-nightly-cleanup
+    description: nightly cleanup
+    scheduleExpression: cron(0 18 * * ? *)
+    state: ENABLED
+    tags:
+      CostCenter: batch
+    targets:
+      - id: lambda
+        arn: arn:aws:lambda:ap-northeast-1:{{ must_env "AWS_ACCOUNT_ID" }}:function:nightly-cleanup
+        input: |
+          {"slackToken": "{{ ssm "/my-app/slack/token" }}"}
+        retryPolicy:
+          maximumRetryAttempts: 2
+          maximumEventAgeInSeconds: 3600
+
+  # event pattern -> Step Functions
+  - name: my-app-on-upload
+    eventPattern: |
+      {"source": ["aws.s3"], "detail-type": ["Object Created"]}
+    targets:
+      - id: sfn
+        arn: arn:aws:states:ap-northeast-1:{{ must_env "AWS_ACCOUNT_ID" }}:stateMachine:ProcessUpload
+        roleArn: arn:aws:iam::{{ must_env "AWS_ACCOUNT_ID" }}:role/EventBridgeInvokeStepFunctions
+
+schedules:
+  # Daily 9am JST -> Lambda (timezone supported natively, unlike EB Rules)
+  - name: my-app-daily-report
+    scheduleExpression: cron(0 9 * * ? *)
+    timezone: Asia/Tokyo
+    state: ENABLED
+    flexibleTimeWindow:
+      mode: OFF
+    target:
+      arn: arn:aws:lambda:ap-northeast-1:{{ must_env "AWS_ACCOUNT_ID" }}:function:daily-report
+      roleArn: arn:aws:iam::{{ must_env "AWS_ACCOUNT_ID" }}:role/SchedulerInvokeLambda
+      retryPolicy:
+        maximumRetryAttempts: 3
+        maximumEventAgeInSeconds: 3600
+
+  # One-shot ECS RunTask, auto-deletes after run
+  - name: my-app-migration
+    scheduleExpression: at(2026-06-01T03:00:00)
+    timezone: Asia/Tokyo
+    actionAfterCompletion: DELETE
+    flexibleTimeWindow:
+      mode: OFF
+    target:
+      arn: arn:aws:ecs:ap-northeast-1:{{ must_env "AWS_ACCOUNT_ID" }}:cluster/my-cluster
+      roleArn: arn:aws:iam::{{ must_env "AWS_ACCOUNT_ID" }}:role/SchedulerInvokeECS
+      ecsParameters:
+        taskDefinitionArn: arn:aws:ecs:ap-northeast-1:{{ must_env "AWS_ACCOUNT_ID" }}:task-definition/migration
+        taskCount: 1
+        launchType: FARGATE
+        platformVersion: LATEST
+        subnets: [subnet-aaa, subnet-bbb]
+        securityGroups: [sg-xxx]
+        assignPublicIp: DISABLED
