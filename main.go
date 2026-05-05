@@ -106,25 +106,53 @@ type DeadLetterConfig struct {
 
 // --- main ------------------------------------------------------------------
 
+// tagFilterFlag implements flag.Value for repeatable `-tag KEY=VALUE`. The
+// resulting map is AND-matched against each remote resource's tag set.
+type tagFilterFlag map[string]string
+
+func (t *tagFilterFlag) String() string {
+	if t == nil || *t == nil {
+		return ""
+	}
+	parts := make([]string, 0, len(*t))
+	for k, v := range *t {
+		parts = append(parts, k+"="+v)
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ",")
+}
+
+func (t *tagFilterFlag) Set(v string) error {
+	k, val, ok := strings.Cut(v, "=")
+	if !ok || k == "" {
+		return fmt.Errorf("-tag must be KEY=VALUE, got %q", v)
+	}
+	if *t == nil {
+		*t = tagFilterFlag{}
+	}
+	(*t)[k] = val
+	return nil
+}
+
 func main() {
 	var (
-		confPath       string
-		dryRun         bool
-		prune          bool
-		showVersion    bool
-		dumpTrackingID string
-		autoApprove    bool
+		confPath    string
+		dryRun      bool
+		prune       bool
+		showVersion bool
+		dumpTags    tagFilterFlag
+		autoApprove bool
 	)
 	flag.StringVar(&confPath, "conf", "ebschedule.yaml", "config file or glob (e.g. 'config/*.yaml')")
 	flag.BoolVar(&dryRun, "dry-run", false, "do not actually apply")
 	flag.BoolVar(&prune, "prune", false, "delete tracked resources absent from config")
 	flag.BoolVar(&showVersion, "version", false, "print version and exit")
-	flag.StringVar(&dumpTrackingID, "tracking-id", "", "(dump) only emit Rules tagged ebschedule-tracking-id=<ID>")
+	flag.Var(&dumpTags, "tag", "(dump) only emit Rules with this tag; repeatable; AND across all (KEY=VALUE)")
 	flag.BoolVar(&autoApprove, "auto-approve", false, "(apply) skip the interactive confirmation prompt")
 	flag.Usage = func() {
 		fmt.Fprintln(os.Stderr, `usage:
   ebschedule [-conf FILE_OR_GLOB] [-dry-run] [-prune] [-auto-approve] <dump|diff|apply|validate> [name-prefix]
-  ebschedule [-conf FILE_OR_GLOB] [-tracking-id ID] dump [name-prefix]
+  ebschedule [-conf FILE_OR_GLOB] [-tag KEY=VALUE]... dump [name-prefix]
   ebschedule import-ecschedule [-in FILE] [-account NUM] [-region REGION] [-tracking-id ID]
   ebschedule -version
 
@@ -158,7 +186,7 @@ Exit codes:
 		if len(args) > 1 {
 			prefix = args[1]
 		}
-		check(runDump(ctx, out, confPath, prefix, dumpTrackingID))
+		check(runDump(ctx, out, confPath, prefix, dumpTags))
 	case "diff":
 		cfgs, err := loadConfigs(confPath)
 		check(err)
@@ -247,12 +275,12 @@ func check(err error) {
 // using AWS defaults. Other load errors (parse / template / strict YAML)
 // are surfaced so typos can't be silently swallowed.
 //
-// trackingIDFilter, when non-empty, restricts the dumped Rules to those
-// tagged with ebschedule-tracking-id=<value>; useful for dumping only
-// resources you already manage out of an account that holds many. The
-// filter does not currently apply to Schedules (those are scoped per
-// schedule-group, which is already a config-level decision).
-func runDump(ctx context.Context, out io.Writer, confPath, prefix, trackingIDFilter string) error {
+// tagFilter, when non-empty, restricts the dumped Rules to those carrying
+// every listed tag; useful for bootstrapping a config out of an account
+// that holds rules from multiple stacks (e.g. -tag Service=my-app). The
+// filter does not currently apply to Schedules (those scope is already
+// per-group, a config-level decision).
+func runDump(ctx context.Context, out io.Writer, confPath, prefix string, tagFilter map[string]string) error {
 	region, bus, group := "", "default", "default"
 	cfgs, err := loadConfigs(confPath)
 	if err != nil && !errors.Is(err, errNoConfigFiles) {
@@ -274,7 +302,7 @@ func runDump(ctx context.Context, out io.Writer, confPath, prefix, trackingIDFil
 	if group != "default" {
 		dumped.GroupName = group
 	}
-	rules, err := dumpRulesFiltered(ctx, region, bus, prefix, trackingIDFilter)
+	rules, err := dumpRulesFiltered(ctx, region, bus, prefix, tagFilter)
 	if err != nil {
 		return fmt.Errorf("dump rules: %w", err)
 	}

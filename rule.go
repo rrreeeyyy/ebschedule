@@ -84,21 +84,31 @@ func newEBClient(ctx context.Context, region string) (*eventbridge.Client, error
 // --- dump ------------------------------------------------------------------
 
 func dumpRules(ctx context.Context, region, bus, prefix string) ([]*Rule, error) {
-	return dumpRulesFiltered(ctx, region, bus, prefix, "")
+	return dumpRulesFiltered(ctx, region, bus, prefix, nil)
 }
 
-// dumpRulesFiltered behaves like dumpRules but drops Rules whose
-// ebschedule-tracking-id tag does not equal trackingIDFilter (when
-// non-empty).
-func dumpRulesFiltered(ctx context.Context, region, bus, prefix, trackingIDFilter string) ([]*Rule, error) {
+// dumpRulesFiltered behaves like dumpRules but drops Rules that don't
+// carry every tag in tagFilter. nil/empty tagFilter means "no filter".
+func dumpRulesFiltered(ctx context.Context, region, bus, prefix string, tagFilter map[string]string) ([]*Rule, error) {
 	cli, err := newEBClient(ctx, region)
 	if err != nil {
 		return nil, err
 	}
-	return dumpRulesWith(ctx, cli, bus, prefix, trackingIDFilter)
+	return dumpRulesWith(ctx, cli, bus, prefix, tagFilter)
 }
 
-func dumpRulesWith(ctx context.Context, cli ebAPI, bus, prefix, trackingIDFilter string) ([]*Rule, error) {
+// matchesTagFilter reports whether tags carries every key/value in filter.
+// Empty / nil filter trivially matches everything.
+func matchesTagFilter(tags, filter map[string]string) bool {
+	for k, v := range filter {
+		if tags[k] != v {
+			return false
+		}
+	}
+	return true
+}
+
+func dumpRulesWith(ctx context.Context, cli ebAPI, bus, prefix string, tagFilter map[string]string) ([]*Rule, error) {
 	var out []*Rule
 	var token *string
 	for {
@@ -118,7 +128,7 @@ func dumpRulesWith(ctx context.Context, cli ebAPI, bus, prefix, trackingIDFilter
 			if err != nil {
 				return nil, err
 			}
-			if trackingIDFilter != "" && tags[trackingTagKey] != trackingIDFilter {
+			if !matchesTagFilter(tags, tagFilter) {
 				continue
 			}
 			rule := fromRemoteRule(r)
@@ -284,7 +294,7 @@ func applyRulesWith(ctx context.Context, out io.Writer, cli ebAPI, cfg *Config, 
 	if cfg.TrackingID == "" {
 		return fmt.Errorf("-prune requires trackingId in config (safety guard)")
 	}
-	current, err := dumpRulesWith(ctx, cli, bus, "", "")
+	current, err := dumpRulesWith(ctx, cli, bus, "", nil)
 	if err != nil {
 		return err
 	}

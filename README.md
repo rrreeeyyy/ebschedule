@@ -27,6 +27,9 @@ go build -o ebschedule .
 # bootstrap a config from what's already in AWS
 ebschedule dump my-app- > ebschedule.yaml
 
+# bootstrap by tag (e.g. only Rules tagged Service=my-app, AND'd if multiple)
+ebschedule -conf /dev/null -tag Service=my-app -tag Env=prod dump > ebschedule.yaml
+
 # offline structural check (no AWS calls)
 ebschedule -conf ebschedule.yaml validate
 
