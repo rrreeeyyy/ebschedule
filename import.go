@@ -255,7 +255,7 @@ func buildContainerOverridesInput(overrides []ecsContainerOverride) string {
 			MemoryReservation: o.MemoryReservation,
 		}
 		for _, e := range o.Environment {
-			co.Environment = append(co.Environment, envKV{Name: e.Name, Value: e.Value})
+			co.Environment = append(co.Environment, envKV(e))
 		}
 		cs = append(cs, co)
 	}
