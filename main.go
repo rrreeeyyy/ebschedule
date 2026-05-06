@@ -32,6 +32,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
+	"github.com/fujiwara/tfstate-lookup/tfstate"
 	"github.com/pmezard/go-difflib/difflib"
 	"golang.org/x/term"
 	"gopkg.in/yaml.v3"
@@ -40,6 +41,13 @@ import (
 // trackingTagKey marks resources managed by ebschedule. -prune only deletes
 // resources carrying this tag with the trackingId from the same config.
 const trackingTagKey = "ebschedule-tracking-id"
+
+// envTfstateURL is the env var that points runtimeFuncs at a Terraform
+// state file (local path, file://, s3://, http://, etc.). When set, the
+// `tfstate` template func becomes available. When unset, calling
+// {{ tfstate ... }} errors loudly so missing-URL isn't confused with a
+// missing tfstate value.
+const envTfstateURL = "EBSCHEDULE_TFSTATE_URL"
 
 // version is set via ldflags at release time (see .goreleaser.yaml).
 // "dev" is the default for local builds.
@@ -866,7 +874,7 @@ func runtimeFuncs() template.FuncMap {
 		}
 		return aws.ToString(out.Parameter.Value), nil
 	}
-	return template.FuncMap{
+	funcs := template.FuncMap{
 		"env": os.Getenv,
 		"must_env": func(name string) (string, error) {
 			v := os.Getenv(name)
@@ -877,6 +885,29 @@ func runtimeFuncs() template.FuncMap {
 		},
 		"ssm": ssmFetch,
 	}
+	addTfstateFuncs(funcs, os.Getenv(envTfstateURL))
+	return funcs
+}
+
+// addTfstateFuncs registers `tfstate` (and its companions provided by
+// fujiwara/tfstate-lookup) on funcs. If loc is empty, registers a stub
+// that errors on use so the user gets a clear "set EBSCHEDULE_TFSTATE_URL"
+// message instead of a "function not defined" template error.
+func addTfstateFuncs(funcs template.FuncMap, loc string) {
+	if loc == "" {
+		funcs["tfstate"] = func(any) (string, error) {
+			return "", fmt.Errorf("tfstate template func used but %s is not set", envTfstateURL)
+		}
+		return
+	}
+	tfFuncs, err := tfstate.FuncMap(context.Background(), loc)
+	if err != nil {
+		funcs["tfstate"] = func(any) (string, error) {
+			return "", fmt.Errorf("tfstate (%s): %w", loc, err)
+		}
+		return
+	}
+	maps.Copy(funcs, tfFuncs)
 }
 
 // validateFuncs returns a FuncMap that never hits AWS and never errors out
@@ -890,7 +921,9 @@ func validateFuncs() template.FuncMap {
 			}
 			return "<env:" + name + ">"
 		},
-		"ssm": func(name string) string { return "<ssm:" + name + ">" },
+		"ssm":      func(name string) string { return "<ssm:" + name + ">" },
+		"tfstate":  func(name string) string { return "<tfstate:" + name + ">" },
+		"tfstatef": func(name string, args ...any) string { return "<tfstate:" + name + ">" },
 	}
 }
 

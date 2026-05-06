@@ -706,6 +706,69 @@ func TestNilIfEmpty(t *testing.T) {
 	}
 }
 
+func TestTfstateFuncs(t *testing.T) {
+	t.Run("validateFuncs emits placeholder", func(t *testing.T) {
+		raw := []byte(`x: {{ tfstate "aws_iam_role.eb.arn" }}`)
+		out, err := expandTemplate(raw, validateFuncs())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(out) != `x: <tfstate:aws_iam_role.eb.arn>` {
+			t.Errorf("got %q", out)
+		}
+	})
+
+	t.Run("runtimeFuncs without env errors with helpful message", func(t *testing.T) {
+		t.Setenv(envTfstateURL, "")
+		raw := []byte(`x: {{ tfstate "anything" }}`)
+		_, err := expandTemplate(raw, runtimeFuncs())
+		if err == nil || !strings.Contains(err.Error(), envTfstateURL) {
+			t.Errorf("expected env-not-set error, got %v", err)
+		}
+	})
+
+	t.Run("runtimeFuncs with bogus URL surfaces error on use", func(t *testing.T) {
+		t.Setenv(envTfstateURL, "/nonexistent/terraform.tfstate")
+		raw := []byte(`x: {{ tfstate "anything" }}`)
+		_, err := expandTemplate(raw, runtimeFuncs())
+		if err == nil {
+			t.Error("expected error from bogus tfstate URL")
+		}
+	})
+
+	t.Run("runtimeFuncs with valid local tfstate resolves", func(t *testing.T) {
+		dir := t.TempDir()
+		state := filepath.Join(dir, "terraform.tfstate")
+		body := `{
+  "version": 4,
+  "terraform_version": "1.5.0",
+  "resources": [
+    {
+      "mode": "managed",
+      "type": "aws_iam_role",
+      "name": "eventbridge",
+      "instances": [
+        {"attributes": {"arn": "arn:aws:iam::1:role/test-role"}}
+      ]
+    }
+  ]
+}`
+		if err := os.WriteFile(state, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv(envTfstateURL, state)
+		raw := []byte(`role: {{ tfstate "aws_iam_role.eventbridge.arn" }}`)
+		out, err := expandTemplate(raw, runtimeFuncs())
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "role: arn:aws:iam::1:role/test-role"
+		if string(out) != want {
+			t.Errorf("got %q, want %q", out, want)
+		}
+	})
+}
+
 func TestExpandTemplate(t *testing.T) {
 	t.Setenv("EBS_TEST_VAR", "hello")
 	t.Run("env funcs", func(t *testing.T) {

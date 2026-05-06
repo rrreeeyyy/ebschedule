@@ -130,7 +130,7 @@ func validateRule(r *Rule, path string) []string {
 		tids[t.ID] = j
 		if t.Arn == "" {
 			errs = append(errs, fmt.Sprintf("%s: arn is required", tp))
-		} else if !strings.HasPrefix(t.Arn, "arn:") {
+		} else if !looksLikeArnOrPlaceholder(t.Arn) {
 			errs = append(errs, fmt.Sprintf("%s: arn does not look like an ARN", tp))
 		}
 		if t.Input != "" && !json.Valid([]byte(t.Input)) {
@@ -247,7 +247,7 @@ func validateSchedule(s *Schedule, path string) []string {
 	tp := path + ".target"
 	if s.Target.Arn == "" {
 		errs = append(errs, fmt.Sprintf("%s.arn: is required", tp))
-	} else if !strings.HasPrefix(s.Target.Arn, "arn:") {
+	} else if !looksLikeArnOrPlaceholder(s.Target.Arn) {
 		errs = append(errs, fmt.Sprintf("%s.arn: does not look like an ARN", tp))
 	}
 	if s.Target.RoleArn == "" {
@@ -273,6 +273,14 @@ func validateSchedule(s *Schedule, path string) []string {
 		}
 	}
 	return errs
+}
+
+// looksLikeArnOrPlaceholder accepts both real ARNs (`arn:...`) and the
+// `<tfstate:...>` / `<ssm:...>` placeholders that validate's offline
+// FuncMap emits, so a config that pulls ARNs from tfstate at apply time
+// still passes structural validation when run via `validate`.
+func looksLikeArnOrPlaceholder(s string) bool {
+	return strings.HasPrefix(s, "arn:") || strings.HasPrefix(s, "<")
 }
 
 // validateEcsCommon covers the fields shared between RuleEcsParameters

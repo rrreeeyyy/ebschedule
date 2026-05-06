@@ -121,15 +121,23 @@ groupName: my-app    # ebschedule-owned group (auto-created on first apply)
 
 Config files run through `text/template` **before** YAML parsing:
 
-| Func                 | Notes                                                  |
-| -------------------- | ------------------------------------------------------ |
-| `{{ env "X" }}`      | Empty string if `X` is unset                           |
-| `{{ must_env "X" }}` | Errors out (or placeholder under `validate`)           |
-| `{{ ssm "/p/k" }}`   | SSM Parameter Store, decrypted, region from AWS creds  |
+| Func                            | Notes                                                            |
+| ------------------------------- | ---------------------------------------------------------------- |
+| `{{ env "X" }}`                 | Empty string if `X` is unset                                     |
+| `{{ must_env "X" }}`            | Errors out (or placeholder under `validate`)                     |
+| `{{ ssm "/p/k" }}`              | SSM Parameter Store, decrypted, region from AWS creds            |
+| `{{ tfstate "type.name.attr" }}`| Terraform state lookup; needs `EBSCHEDULE_TFSTATE_URL` env       |
 
-Under `validate`, AWS is never called: `ssm` returns `<ssm:/path>` and
+Under `validate`, AWS / tfstate is never called: `ssm` returns
+`<ssm:/path>`, `tfstate` returns `<tfstate:type.name.attr>`, and
 `must_env` falls back to `<env:NAME>` so the structural check works
-offline.
+offline. Target ARN validation accepts those placeholders so a config
+pulling ARNs from tfstate validates without the URL set.
+
+`EBSCHEDULE_TFSTATE_URL` accepts a local path or any URL the
+fujiwara/tfstate-lookup library understands (file://, s3://, gs://,
+azurerm://, http(s)://, ...). See
+[examples/10-tfstate.yaml](./examples/10-tfstate.yaml).
 
 ## Diff
 
