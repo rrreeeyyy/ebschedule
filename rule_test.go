@@ -88,6 +88,47 @@ func fullTarget() *Target {
 	}
 }
 
+func TestCanonicalizeRule_SortsTargetsByID(t *testing.T) {
+	r := &Rule{
+		Name: "x",
+		Targets: []*Target{
+			{ID: "z", Arn: "arn:..."},
+			{ID: "a", Arn: "arn:..."},
+			{ID: "m", Arn: "arn:..."},
+		},
+	}
+	got := canonicalizeRule(r, &Config{})
+	ids := []string{got.Targets[0].ID, got.Targets[1].ID, got.Targets[2].ID}
+	if !reflect.DeepEqual(ids, []string{"a", "m", "z"}) {
+		t.Errorf("targets not sorted: %v", ids)
+	}
+	// Original input must not be mutated.
+	if r.Targets[0].ID != "z" {
+		t.Errorf("input mutated; first target id is now %q", r.Targets[0].ID)
+	}
+}
+
+func TestCanonicalizeRule_SingleTargetUnchanged(t *testing.T) {
+	r := &Rule{Name: "x", Targets: []*Target{{ID: "only", Arn: "arn:..."}}}
+	got := canonicalizeRule(r, &Config{})
+	if got.Targets[0].ID != "only" {
+		t.Errorf("got %v", got.Targets)
+	}
+}
+
+func TestCanonicalizeRule_MergesTags(t *testing.T) {
+	cfg := &Config{Tags: map[string]string{"Owner": "team", "Env": "prod"}}
+	r := &Rule{Name: "x", Tags: map[string]string{"Env": "stg"}, Targets: []*Target{{ID: "t", Arn: "arn:..."}}}
+	got := canonicalizeRule(r, cfg)
+	if got.Tags["Env"] != "stg" || got.Tags["Owner"] != "team" {
+		t.Errorf("merge mismatch: %v", got.Tags)
+	}
+	// Don't mutate input map.
+	if _, ok := r.Tags["Owner"]; ok {
+		t.Errorf("input Tags mutated: %v", r.Tags)
+	}
+}
+
 func TestRuleTarget_RoundTrip(t *testing.T) {
 	src := fullTarget()
 	got := fromRemoteTarget(toAWSTarget(src))

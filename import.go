@@ -79,7 +79,10 @@ func importEcschedule(args []string) {
 		fmt.Fprintln(os.Stderr, "usage: ebschedule import-ecschedule [-in FILE] [-account NUM] [-region REGION] [-tracking-id ID]")
 		fs.PrintDefaults()
 	}
-	_ = fs.Parse(args)
+	// flag.ExitOnError makes Parse os.Exit on bad input, so the err return
+	// is always nil here in practice. Keep the explicit `_ =` to avoid
+	// errcheck noise without pretending we'd handle it.
+	_ = fs.Parse(args) //nolint:errcheck
 
 	var data []byte
 	var err error
@@ -259,6 +262,11 @@ func buildContainerOverridesInput(overrides []ecsContainerOverride) string {
 		}
 		cs = append(cs, co)
 	}
-	b, _ := json.MarshalIndent(wrapper{cs}, "", "  ")
+	// json.Marshal cannot fail on a struct made of strings, slices, and
+	// pointer-to-int — every type here implements json.Marshaler-equivalent
+	// behavior trivially. Discard the err return to keep the call site
+	// flat; if a future field addition breaks this assumption, the next
+	// `validate` run on the converter's output will surface invalid JSON.
+	b, _ := json.Marshal(wrapper{cs}) //nolint:errcheck
 	return string(b)
 }

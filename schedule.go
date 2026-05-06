@@ -147,7 +147,7 @@ func dumpSchedulesWith(ctx context.Context, cli schedAPI, group, prefix string) 
 			}
 			out = append(out, fromRemoteSchedule(full))
 		}
-		if resp.NextToken == nil {
+		if aws.ToString(resp.NextToken) == "" {
 			break
 		}
 		token = resp.NextToken
@@ -205,8 +205,8 @@ func canonicalizeSchedule(s *Schedule) *Schedule {
 		out.ActionAfterCompletion = ""
 	}
 	if t := out.Target; t != nil && t.RetryPolicy != nil &&
-		t.RetryPolicy.MaximumRetryAttempts == 185 &&
-		t.RetryPolicy.MaximumEventAgeInSeconds == 86400 {
+		t.RetryPolicy.MaximumRetryAttempts == schedDefaultMaximumRetryAttempts &&
+		t.RetryPolicy.MaximumEventAgeInSeconds == schedDefaultMaximumEventAgeInSeconds {
 		tgtCopy := *t
 		tgtCopy.RetryPolicy = nil
 		out.Target = &tgtCopy
@@ -431,7 +431,7 @@ func listTrackedGroups(ctx context.Context, cli schedAPI, trackingID string) ([]
 				}
 			}
 		}
-		if resp.NextToken == nil {
+		if aws.ToString(resp.NextToken) == "" {
 			break
 		}
 		token = resp.NextToken

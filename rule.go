@@ -165,7 +165,9 @@ func dumpRulesWith(ctx context.Context, cli ebAPI, bus, prefix string, tagFilter
 			return nil, err
 		}
 		for _, r := range resp.Rules {
-			tags, err := listRuleTags(ctx, cli, *r.Arn)
+			arn := aws.ToString(r.Arn)
+			name := aws.ToString(r.Name)
+			tags, err := listRuleTags(ctx, cli, arn)
 			if err != nil {
 				return nil, err
 			}
@@ -173,7 +175,7 @@ func dumpRulesWith(ctx context.Context, cli ebAPI, bus, prefix string, tagFilter
 				continue
 			}
 			rule := fromRemoteRule(r)
-			tgts, err := listRuleTargets(ctx, cli, bus, *r.Name)
+			tgts, err := listRuleTargets(ctx, cli, bus, name)
 			if err != nil {
 				return nil, err
 			}
@@ -184,13 +186,29 @@ func dumpRulesWith(ctx context.Context, cli ebAPI, bus, prefix string, tagFilter
 			}
 			out = append(out, rule)
 		}
-		if resp.NextToken == nil {
+		if aws.ToString(resp.NextToken) == "" {
 			break
 		}
 		token = resp.NextToken
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
+}
+
+// canonicalizeRule returns a copy of r prepared for diff/apply YAML
+// comparison: cfg.Tags merged in, Targets sorted by ID so target ordering
+// in the user's YAML doesn't surface as drift (listRuleTargets sorts the
+// remote side identically). Non-destructive.
+func canonicalizeRule(r *Rule, cfg *Config) *Rule {
+	out := *r
+	out.Tags = mergeTags(cfg.Tags, r.Tags)
+	if len(out.Targets) > 1 {
+		sorted := make([]*Target, len(out.Targets))
+		copy(sorted, out.Targets)
+		sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].ID < sorted[j].ID })
+		out.Targets = sorted
+	}
+	return &out
 }
 
 func fromRemoteRule(r ebtypes.Rule) *Rule {
@@ -340,9 +358,7 @@ func diffRules(ctx context.Context, out io.Writer, cfg *Config) (bool, error) {
 	}
 	drift := false
 	for _, want := range cfg.Rules {
-		desired := *want
-		desired.Tags = mergeTags(cfg.Tags, want.Tags)
-		desiredYAML := mustYAML(&desired)
+		desiredYAML := mustYAML(canonicalizeRule(want, cfg))
 		got, ok := cur[want.Name]
 		if !ok {
 			fmt.Fprint(out, unifiedDiff("rule:"+want.Name, "", desiredYAML))
@@ -454,9 +470,7 @@ func applyOneRule(ctx context.Context, out io.Writer, cli ebAPI, bus string, cfg
 	if err != nil {
 		return err
 	}
-	desired := *r
-	desired.Tags = mergeTags(cfg.Tags, r.Tags)
-	desiredYAML := mustYAML(&desired)
+	desiredYAML := mustYAML(canonicalizeRule(r, cfg))
 
 	switch {
 	case !exists:
@@ -676,7 +690,7 @@ func isRuleTracked(ctx context.Context, cli ebAPI, bus, name, trackingID string)
 	if err != nil {
 		return false, err
 	}
-	tags, err := listRuleTags(ctx, cli, *desc.Arn)
+	tags, err := listRuleTags(ctx, cli, aws.ToString(desc.Arn))
 	if err != nil {
 		return false, err
 	}

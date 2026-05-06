@@ -209,6 +209,24 @@ func TestValidateRule_Targets(t *testing.T) {
 		}
 		wantSubstr(t, validateRule(r, "rule[0]:x"), "pipelineParameterList[0].name")
 	})
+	t.Run("input + inputPath rejected", func(t *testing.T) {
+		r := validRule()
+		r.Targets[0].Input = `{"k":"v"}`
+		r.Targets[0].InputPath = "$.detail"
+		wantSubstr(t, validateRule(r, "rule[0]:x"), "mutually exclusive")
+	})
+	t.Run("input + inputTransformer rejected", func(t *testing.T) {
+		r := validRule()
+		r.Targets[0].Input = `{"k":"v"}`
+		r.Targets[0].InputTransformer = &InputTransformer{InputTemplate: `{"a":<a>}`}
+		wantSubstr(t, validateRule(r, "rule[0]:x"), "mutually exclusive")
+	})
+	t.Run("inputPath + inputTransformer rejected", func(t *testing.T) {
+		r := validRule()
+		r.Targets[0].InputPath = "$.detail"
+		r.Targets[0].InputTransformer = &InputTransformer{InputTemplate: `{"a":<a>}`}
+		wantSubstr(t, validateRule(r, "rule[0]:x"), "mutually exclusive")
+	})
 }
 
 func TestValidateSchedule_NewTargetParameters(t *testing.T) {
@@ -259,6 +277,18 @@ func TestValidateSchedule(t *testing.T) {
 		errs := validateSchedule(s, "schedule[0]:x")
 		wantSubstr(t, errs, "startDate: must be RFC3339")
 		wantSubstr(t, errs, "endDate: must be RFC3339")
+	})
+	t.Run("endDate before startDate rejected", func(t *testing.T) {
+		s := validSchedule()
+		s.StartDate = "2026-06-02T00:00:00Z"
+		s.EndDate = "2026-06-01T00:00:00Z"
+		wantSubstr(t, validateSchedule(s, "schedule[0]:x"), "endDate must be after startDate")
+	})
+	t.Run("endDate equal startDate rejected", func(t *testing.T) {
+		s := validSchedule()
+		s.StartDate = "2026-06-01T00:00:00Z"
+		s.EndDate = "2026-06-01T00:00:00Z"
+		wantSubstr(t, validateSchedule(s, "schedule[0]:x"), "endDate must be after startDate")
 	})
 	t.Run("flexible window mode invalid", func(t *testing.T) {
 		s := validSchedule()
