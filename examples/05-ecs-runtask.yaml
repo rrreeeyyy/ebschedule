@@ -30,20 +30,15 @@ rules:
           securityGroups: [sg-egress]
           assignPublicIp: DISABLED
           propagateTags: TASK_DEFINITION
-        # ECS RunTask container overrides go through `input` as JSON.
-        input: |
-          {
-            "containerOverrides": [
-              {
-                "name": "app",
-                "command": ["python", "etl.py"],
-                "environment": [
-                  {"name": "ENV", "value": "production"},
-                  {"name": "RUN_DATE", "value": "auto"}
-                ]
-              }
-            ]
-          }
+        # ECS RunTask container overrides go through `input`. Either a JSON
+        # string (legacy) or a YAML mapping works; the latter is recommended.
+        input:
+          containerOverrides:
+            - name: app
+              command: [python, etl.py]
+              environment:
+                - {name: ENV,      value: production}
+                - {name: RUN_DATE, value: auto}
         retryPolicy:
           maximumRetryAttempts: 2
           maximumEventAgeInSeconds: 3600

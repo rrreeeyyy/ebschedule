@@ -12,7 +12,9 @@ tags:
 rules:
   # Kinesis Data Stream: PartitionKeyPath is a JSON path into the event payload.
   - name: example-kinesis
-    eventPattern: '{"source": ["aws.s3"], "detail-type": ["Object Created"]}'
+    eventPattern:
+      source: [aws.s3]
+      detail-type: [Object Created]
     state: ENABLED
     targets:
       - id: kinesis
@@ -77,7 +79,8 @@ rules:
 
   # API Destination (HTTP endpoint): pass headers / path / query params.
   - name: example-api-destination
-    eventPattern: '{"source": ["aws.events"]}'
+    eventPattern:
+      source: [aws.events]
     state: ENABLED
     targets:
       - id: api

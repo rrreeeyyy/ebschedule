@@ -35,7 +35,7 @@ type Rule struct {
 	Name               string            `yaml:"name"`
 	Description        string            `yaml:"description,omitempty"`
 	ScheduleExpression string            `yaml:"scheduleExpression,omitempty"`
-	EventPattern       string            `yaml:"eventPattern,omitempty"`
+	EventPattern       jsonField         `yaml:"eventPattern,omitempty"`
 	State              string            `yaml:"state,omitempty"` // ENABLED | DISABLED
 	RoleArn            string            `yaml:"roleArn,omitempty"`
 	Tags               map[string]string `yaml:"tags,omitempty"`
@@ -46,7 +46,7 @@ type Target struct {
 	ID                          string                       `yaml:"id"`
 	Arn                         string                       `yaml:"arn"`
 	RoleArn                     string                       `yaml:"roleArn,omitempty"`
-	Input                       string                       `yaml:"input,omitempty"`
+	Input                       jsonField                    `yaml:"input,omitempty"`
 	InputPath                   string                       `yaml:"inputPath,omitempty"`
 	InputTransformer            *InputTransformer            `yaml:"inputTransformer,omitempty"`
 	RetryPolicy                 *RetryPolicy                 `yaml:"retryPolicy,omitempty"`
@@ -198,7 +198,7 @@ func fromRemoteRule(r ebtypes.Rule) *Rule {
 		Name:               aws.ToString(r.Name),
 		Description:        aws.ToString(r.Description),
 		ScheduleExpression: aws.ToString(r.ScheduleExpression),
-		EventPattern:       aws.ToString(r.EventPattern),
+		EventPattern:       jsonFieldFromAWS(aws.ToString(r.EventPattern)),
 		State:              string(r.State),
 		RoleArn:            aws.ToString(r.RoleArn),
 	}
@@ -239,7 +239,7 @@ func fromRemoteTarget(t ebtypes.Target) *Target {
 		ID:        aws.ToString(t.Id),
 		Arn:       aws.ToString(t.Arn),
 		RoleArn:   aws.ToString(t.RoleArn),
-		Input:     aws.ToString(t.Input),
+		Input:     jsonFieldFromAWS(aws.ToString(t.Input)),
 		InputPath: aws.ToString(t.InputPath),
 	}
 	if t.InputTransformer != nil {
@@ -488,7 +488,7 @@ func applyOneRule(ctx context.Context, out io.Writer, cli ebAPI, bus string, cfg
 		in.ScheduleExpression = aws.String(r.ScheduleExpression)
 	}
 	if r.EventPattern != "" {
-		in.EventPattern = aws.String(r.EventPattern)
+		in.EventPattern = aws.String(string(r.EventPattern))
 	}
 	if r.RoleArn != "" {
 		in.RoleArn = aws.String(r.RoleArn)
@@ -567,7 +567,7 @@ func toAWSTarget(t *Target) ebtypes.Target {
 		at.RoleArn = aws.String(t.RoleArn)
 	}
 	if t.Input != "" {
-		at.Input = aws.String(t.Input)
+		at.Input = aws.String(string(t.Input))
 	}
 	if t.InputPath != "" {
 		at.InputPath = aws.String(t.InputPath)

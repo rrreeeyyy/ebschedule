@@ -71,7 +71,7 @@ type FlexibleTimeWindow struct {
 type ScheduleTarget struct {
 	Arn                         string                       `yaml:"arn"`
 	RoleArn                     string                       `yaml:"roleArn"`
-	Input                       string                       `yaml:"input,omitempty"`
+	Input                       jsonField                    `yaml:"input,omitempty"`
 	DeadLetterConfig            *DeadLetterConfig            `yaml:"deadLetterConfig,omitempty"`
 	RetryPolicy                 *RetryPolicy                 `yaml:"retryPolicy,omitempty"`
 	EcsParameters               *SchedEcsParameters          `yaml:"ecsParameters,omitempty"`
@@ -217,7 +217,7 @@ func fromRemoteSchedTarget(t *schtypes.Target) *ScheduleTarget {
 	st := &ScheduleTarget{
 		Arn:     aws.ToString(t.Arn),
 		RoleArn: aws.ToString(t.RoleArn),
-		Input:   aws.ToString(t.Input),
+		Input:   jsonFieldFromAWS(aws.ToString(t.Input)),
 	}
 	if t.DeadLetterConfig != nil {
 		st.DeadLetterConfig = &DeadLetterConfig{Arn: aws.ToString(t.DeadLetterConfig.Arn)}
@@ -577,7 +577,7 @@ func toAWSSchedTarget(t *ScheduleTarget) (*schtypes.Target, error) {
 		RoleArn: aws.String(t.RoleArn),
 	}
 	if t.Input != "" {
-		at.Input = aws.String(t.Input)
+		at.Input = aws.String(string(t.Input))
 	}
 	if t.DeadLetterConfig != nil {
 		at.DeadLetterConfig = &schtypes.DeadLetterConfig{Arn: aws.String(t.DeadLetterConfig.Arn)}
