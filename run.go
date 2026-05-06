@@ -313,8 +313,8 @@ func runRunSubcommand(ctx context.Context, out io.Writer, confPath string, globa
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(io.Discard) // surface our own usage on parse failure
 	var (
-		ruleName  string
-		localDry  bool
+		ruleName string
+		localDry bool
 	)
 	fs.StringVar(&ruleName, "rule", "", "rule name to run (required)")
 	fs.BoolVar(&localDry, "dry-run", false, "print what would be invoked without calling AWS")
