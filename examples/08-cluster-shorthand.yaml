@@ -10,8 +10,12 @@
 # Anything starting with `arn:` is left alone; mix and match as you please.
 # Useful for migrating off ecschedule with minimal yaml churn.
 #
-# `account:` defaults to AWS_ACCOUNT_ID env when omitted. Templating with
-# `{{ must_env "AWS_ACCOUNT_ID" }}` still works the old way.
+# `account:` defaults to the AWS_ACCOUNT_ID env var when omitted, and
+# online subcommands (apply / diff / dump / run) auto-fill it from
+# sts:GetCallerIdentity if the env is also unset — so for the common
+# "manage the calling account" case you can drop both. We keep the
+# `must_env` template here so `ebschedule validate` works offline
+# without exporting anything.
 
 region: ap-northeast-1
 account: '{{ must_env "AWS_ACCOUNT_ID" }}'
