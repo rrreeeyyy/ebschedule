@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"sort"
 	"strings"
 
@@ -463,9 +464,7 @@ func ensureScheduleGroup(ctx context.Context, out io.Writer, cli schedAPI, group
 	}
 	in := &scheduler.CreateScheduleGroupInput{Name: aws.String(group)}
 	tags := map[string]string{}
-	for k, v := range cfg.Tags {
-		tags[k] = v
-	}
+	maps.Copy(tags, cfg.Tags)
 	if cfg.TrackingID != "" {
 		tags[trackingTagKey] = cfg.TrackingID
 	}

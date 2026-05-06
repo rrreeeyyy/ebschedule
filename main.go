@@ -19,6 +19,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -717,12 +718,8 @@ func mergeTags(base, override map[string]string) map[string]string {
 		return nil
 	}
 	out := map[string]string{}
-	for k, v := range base {
-		out[k] = v
-	}
-	for k, v := range override {
-		out[k] = v
-	}
+	maps.Copy(out, base)
+	maps.Copy(out, override)
 	return out
 }
 
@@ -739,9 +736,7 @@ func reconcileTags(
 	unset func([]string) error,
 ) error {
 	full := map[string]string{}
-	for k, v := range desired {
-		full[k] = v
-	}
+	maps.Copy(full, desired)
 	if trackingValue != "" {
 		full[trackingTagKey] = trackingValue
 	}

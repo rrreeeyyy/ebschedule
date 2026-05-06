@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -489,9 +490,7 @@ type fakeTagOps struct {
 
 func (f *fakeTagOps) set(tags map[string]string) error {
 	cp := map[string]string{}
-	for k, v := range tags {
-		cp[k] = v
-	}
+	maps.Copy(cp, tags)
 	f.setCalls = append(f.setCalls, cp)
 	return f.setErr
 }
