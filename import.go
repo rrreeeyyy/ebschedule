@@ -19,8 +19,31 @@ type ecsConfig struct {
 	Cluster  string     `yaml:"cluster"`
 	Account  string     `yaml:"account,omitempty"`  // some forks
 	BaseFile string     `yaml:"baseFile,omitempty"` // include sibling file
-	Rules    []*ecsRule `yaml:"rules"`
+	// Role at the top level is ecschedule's default IAM role for any
+	// rule that doesn't specify one. We chain it into target.RoleArn
+	// during conversion so an imported config has the same role
+	// resolution ecschedule applied at runtime.
+	Role string `yaml:"role,omitempty"`
+	// Plugins is ecschedule's per-config plugin block (most commonly
+	// the tfstate-lookup plugin). ebschedule wires tfstate via the
+	// EBSCHEDULE_TFSTATE_URL env var instead, so we capture the block
+	// only to surface a warning rather than silently drop user intent.
+	Plugins []ecsPlugin `yaml:"plugins,omitempty"`
+	Rules   []*ecsRule  `yaml:"rules"`
 }
+
+// ecsPlugin captures just enough of ecschedule's plugin entry to
+// recognize the block on import. We do not execute plugins.
+type ecsPlugin struct {
+	Name   string         `yaml:"name"`
+	Config map[string]any `yaml:"config,omitempty"`
+}
+
+// defaultECSEventsRole matches ecschedule's `defaultRole` constant.
+// When neither the per-target role nor the top-level role is set, the
+// importer falls back here so an imported config still has a roleArn
+// to apply against — same chain ecschedule applies at runtime.
+const defaultECSEventsRole = "ecsEventsRole"
 
 type ecsRule struct {
 	Name               string     `yaml:"name"`
@@ -173,6 +196,16 @@ func convertEcschedule(src *ecsConfig, account, trackingID string) *Config {
 		},
 	}
 
+	if len(src.Plugins) > 0 {
+		names := make([]string, 0, len(src.Plugins))
+		for _, p := range src.Plugins {
+			names = append(names, p.Name)
+		}
+		fmt.Fprintf(os.Stderr,
+			"warn: dropping plugins block (%s); ebschedule reads tfstate via the EBSCHEDULE_TFSTATE_URL env var instead — set that before running apply/diff.\n",
+			strings.Join(names, ","))
+	}
+
 	for _, r := range src.Rules {
 		rule := &Rule{
 			Name:               r.Name,
@@ -195,10 +228,23 @@ func convertEcschedule(src *ecsConfig, account, trackingID string) *Config {
 			tid = "ecs"
 		}
 
+		// Role resolution chain matches ecschedule: per-target role
+		// wins, falling back to the top-level role, falling back to
+		// "ecsEventsRole". The constant default is what ecschedule
+		// applies at apply time when neither yaml field is set, so
+		// imports keep the same effective role rather than emitting an
+		// empty roleArn that would trip apply later.
+		role := r.Target.Role
+		if role == "" {
+			role = src.Role
+		}
+		if role == "" {
+			role = defaultECSEventsRole
+		}
 		target := &Target{
 			ID:      tid,
 			Arn:     fmt.Sprintf("arn:aws:ecs:%s:%s:cluster/%s", src.Region, account, src.Cluster),
-			RoleArn: resolveRoleArn(r.Target.Role, account),
+			RoleArn: resolveRoleArn(role, account),
 		}
 
 		ep := &RuleEcsParameters{

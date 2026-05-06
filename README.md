@@ -345,7 +345,18 @@ ebschedule import-ecschedule -in ecschedule.yaml -account 123456789012 \
 
 - ECS RunTask targets are emitted as EventBridge Rule targets with
   `ecsParameters`.
-- `containerOverrides` is encoded into the target's `input` JSON.
+- `containerOverrides` and `taskOverride` are encoded into the target's
+  `input` JSON; `run` decodes them again on dispatch so ad-hoc
+  invocation keeps the same overrides.
+- IAM role resolution mirrors ecschedule's chain: per-target `role`
+  wins, falling back to the top-level `role:`, then to `ecsEventsRole`
+  — so a config that omits the role in one or both spots still imports
+  with a non-empty `roleArn` (whatever ecschedule would have used at
+  apply time).
+- A `plugins:` block (e.g. ecschedule's tfstate-lookup plugin) is
+  surfaced as a stderr warning and dropped from the output. ebschedule
+  reads tfstate via the `EBSCHEDULE_TFSTATE_URL` env var; set it before
+  running `apply` / `diff`.
 - If `-account` is not given and `AWS_ACCOUNT_ID` is unset, the converter
   emits a `{{ must_env "AWS_ACCOUNT_ID" }}` placeholder so a single
   config can be reused across accounts.
