@@ -15,10 +15,10 @@ import (
 // --- ecschedule YAML schema (subset we care about) ------------------------
 
 type ecsConfig struct {
-	Region   string     `yaml:"region"`
-	Cluster  string     `yaml:"cluster"`
-	Account  string     `yaml:"account,omitempty"`  // some forks
-	BaseFile string     `yaml:"baseFile,omitempty"` // include sibling file
+	Region   string `yaml:"region"`
+	Cluster  string `yaml:"cluster"`
+	Account  string `yaml:"account,omitempty"`  // some forks
+	BaseFile string `yaml:"baseFile,omitempty"` // include sibling file
 	// Role at the top level is ecschedule's default IAM role for any
 	// rule that doesn't specify one. We chain it into target.RoleArn
 	// during conversion so an imported config has the same role
