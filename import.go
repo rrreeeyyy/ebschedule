@@ -79,7 +79,10 @@ func importEcschedule(args []string) {
 		fmt.Fprintln(os.Stderr, "usage: ebschedule import-ecschedule [-in FILE] [-account NUM] [-region REGION] [-tracking-id ID]")
 		fs.PrintDefaults()
 	}
-	_ = fs.Parse(args)
+	// flag.ExitOnError makes Parse os.Exit on bad input, so the err return
+	// is always nil here in practice. Keep the explicit `_ =` to avoid
+	// errcheck noise without pretending we'd handle it.
+	_ = fs.Parse(args) //nolint:errcheck
 
 	var data []byte
 	var err error
@@ -259,6 +262,12 @@ func buildContainerOverridesInput(overrides []ecsContainerOverride) string {
 		}
 		cs = append(cs, co)
 	}
-	b, _ := json.MarshalIndent(wrapper{cs}, "", "  ")
+	// json.Marshal on plain string/int/slice values is total - it never
+	// fails for the shapes here. Panic on the unreachable error so a
+	// future field addition that breaks this assumption is loud.
+	b, err := json.Marshal(wrapper{cs})
+	if err != nil {
+		panic(fmt.Errorf("buildContainerOverridesInput: %w", err))
+	}
 	return string(b)
 }

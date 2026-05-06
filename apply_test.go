@@ -534,9 +534,15 @@ func captureStderr(t *testing.T, fn func()) string {
 		_, _ = io.Copy(&buf, r)
 		done <- buf.String()
 	}()
-	fn()
-	_ = w.Close()
-	os.Stderr = orig
+	// Restore + close in a deferred function so the pipe writer always
+	// closes (and the reader goroutine wakes) even if fn panics.
+	func() {
+		defer func() {
+			_ = w.Close()
+			os.Stderr = orig
+		}()
+		fn()
+	}()
 	return <-done
 }
 

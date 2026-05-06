@@ -10,10 +10,19 @@ import (
 )
 
 // Resource name regex used by both EventBridge Rules and Scheduler Schedules.
+// AWS docs differ slightly on whether Scheduler permits underscores; testing
+// the API today shows it does, so we keep a single regex.
 var nameRe = regexp.MustCompile(`^[A-Za-z0-9_.\-]+$`)
 
 // Schedule expressions accepted by Scheduler / EventBridge.
 var schedExprRe = regexp.MustCompile(`^(cron|rate|at)\(.+\)\s*$`)
+
+// Documented Scheduler defaults; canonicalizeSchedule drops user-side values
+// that match these so diff stays whitespace-and-default-insensitive.
+const (
+	schedDefaultMaximumRetryAttempts     = 185
+	schedDefaultMaximumEventAgeInSeconds = 86400
+)
 
 // runValidate runs offline validation across all loaded configs and exits
 // non-zero if any errors were found. It prints every problem rather than
@@ -130,6 +139,22 @@ func validateRule(r *Rule, path string) []string {
 		if t.InputTransformer != nil && t.InputTransformer.InputTemplate == "" {
 			errs = append(errs, fmt.Sprintf("%s.inputTransformer.inputTemplate: is required", tp))
 		}
+		// EventBridge accepts at most one of Input / InputPath / InputTransformer
+		// per target. AWS silently picks one if multiple are set, which is
+		// surprising; reject up front.
+		inputModes := 0
+		if t.Input != "" {
+			inputModes++
+		}
+		if t.InputPath != "" {
+			inputModes++
+		}
+		if t.InputTransformer != nil {
+			inputModes++
+		}
+		if inputModes > 1 {
+			errs = append(errs, fmt.Sprintf("%s: input, inputPath, and inputTransformer are mutually exclusive", tp))
+		}
 		if t.EcsParameters != nil {
 			if t.EcsParameters.TaskDefinitionArn == "" {
 				errs = append(errs, fmt.Sprintf("%s.ecsParameters.taskDefinitionArn: is required", tp))
@@ -194,13 +219,24 @@ func validateSchedule(s *Schedule, path string) []string {
 	if a := s.ActionAfterCompletion; a != "" && a != "NONE" && a != "DELETE" {
 		errs = append(errs, fmt.Sprintf("%s.actionAfterCompletion: must be NONE or DELETE", path))
 	}
-	for _, pair := range []struct{ name, val string }{{"startDate", s.StartDate}, {"endDate", s.EndDate}} {
+	var startTime, endTime time.Time
+	for _, pair := range []struct {
+		name string
+		val  string
+		out  *time.Time
+	}{{"startDate", s.StartDate, &startTime}, {"endDate", s.EndDate, &endTime}} {
 		if pair.val == "" {
 			continue
 		}
-		if _, err := time.Parse(time.RFC3339, pair.val); err != nil {
+		t, err := time.Parse(time.RFC3339, pair.val)
+		if err != nil {
 			errs = append(errs, fmt.Sprintf("%s.%s: must be RFC3339", path, pair.name))
+			continue
 		}
+		*pair.out = t
+	}
+	if !startTime.IsZero() && !endTime.IsZero() && !endTime.After(startTime) {
+		errs = append(errs, fmt.Sprintf("%s: endDate must be after startDate", path))
 	}
 	if ftw := s.FlexibleTimeWindow; ftw != nil {
 		if ftw.Mode != "OFF" && ftw.Mode != "FLEXIBLE" {
