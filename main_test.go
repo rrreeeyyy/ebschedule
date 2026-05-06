@@ -877,7 +877,7 @@ func TestJsonnetConfigLoad(t *testing.T) {
 		}
 		// EBS_TEST_REGION explicitly unset; env() should return the default.
 		t.Setenv("EBS_TEST_REGION", "")
-		os.Unsetenv("EBS_TEST_REGION")
+		_ = os.Unsetenv("EBS_TEST_REGION")
 		cfgs, err := loadConfigs(p)
 		if err != nil {
 			t.Fatal(err)
@@ -895,7 +895,7 @@ func TestJsonnetConfigLoad(t *testing.T) {
 		), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		os.Unsetenv("EBS_DEFINITELY_UNSET")
+		_ = os.Unsetenv("EBS_DEFINITELY_UNSET")
 		_, err := loadConfigs(p)
 		if err == nil || !strings.Contains(err.Error(), "EBS_DEFINITELY_UNSET") {
 			t.Errorf("expected must_env error, got %v", err)
