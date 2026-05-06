@@ -40,14 +40,21 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          cache: false
+          # Share the module / build cache with the test job so the
+          # second-to-finish workflow doesn't re-download every dep.
+          cache: true
       - uses: golangci/golangci-lint-action@v7
         with:
           # Pin to a specific version so reruns of an old commit stay
           # reproducible and a tool-side breaking change can't surprise CI.
           version: v2.5.0
 
-  goreleaser-check:
+  # PRs only build a single target snapshot (~30s) — enough to catch
+  # goreleaser config drift without paying for 6 platforms of cross-build
+  # on every push. Full archive matrix runs on main push (job below) and
+  # on tag push via release.yml, which is where it actually matters.
+  goreleaser-check-pr:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -56,6 +63,23 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          cache: true
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: build --single-target --snapshot --clean
+
+  goreleaser-check-main:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
       - uses: goreleaser/goreleaser-action@v6
         with:
           version: "~> v2"
