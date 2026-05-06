@@ -94,10 +94,24 @@ func TestValidateRule_Expression(t *testing.T) {
 		r.EventPattern = `{"source":["x"]}`
 		wantSubstr(t, validateRule(r, "rule[0]:x"), "mutually exclusive")
 	})
-	t.Run("malformed schedule expression", func(t *testing.T) {
+	t.Run("malformed schedule expression wrapper", func(t *testing.T) {
 		r := validRule()
 		r.ScheduleExpression = "every 5 minutes"
-		wantSubstr(t, validateRule(r, "rule[0]:x"), "scheduleExpression must look like")
+		wantSubstr(t, validateRule(r, "rule[0]:x"), "must look like")
+	})
+	t.Run("cron expression with bad inner field count", func(t *testing.T) {
+		r := validRule()
+		// Missing year field — AWS EventBridge cron has 6 fields, not 5.
+		r.ScheduleExpression = "cron(0 18 * * ?)"
+		errs := validateRule(r, "rule[0]:x")
+		if len(errs) == 0 {
+			t.Fatal("expected cron parse error")
+		}
+	})
+	t.Run("cron expression with stray inner whitespace", func(t *testing.T) {
+		r := validRule()
+		r.ScheduleExpression = "cron( 0 18 * * ? *)"
+		wantSubstr(t, validateRule(r, "rule[0]:x"), "stray whitespace")
 	})
 	t.Run("invalid event pattern JSON", func(t *testing.T) {
 		r := validRule()
@@ -286,7 +300,7 @@ func TestValidateSchedule(t *testing.T) {
 	t.Run("malformed expression", func(t *testing.T) {
 		s := validSchedule()
 		s.ScheduleExpression = "every minute"
-		wantSubstr(t, validateSchedule(s, "schedule[0]:x"), "scheduleExpression must look like")
+		wantSubstr(t, validateSchedule(s, "schedule[0]:x"), "must look like")
 	})
 	t.Run("invalid timezone", func(t *testing.T) {
 		s := validSchedule()

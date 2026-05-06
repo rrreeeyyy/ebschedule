@@ -85,7 +85,7 @@ Rules and Schedules.
 | `validate`          |     —     |      —      | Offline structural check; exits non-zero on errors |
 | `dump [prefix]`     |     ✓     |      —      | Emit YAML reflecting current AWS state             |
 | `diff`              |     ✓     |      —      | Unified-diff per resource; exits 2 on drift        |
-| `apply`             |     ✓     |      ✓      | Create / update; `-dry-run` keeps it read-only     |
+| `apply`             |     ✓     |      ✓      | Create / update; `-dry-run` keeps it read-only. Pre-flight verifies AWS creds + every referenced ECS task definition exists |
 | `-prune apply`      |     ✓     |      ✓      | Apply + delete tracked resources missing from config |
 | `run -rule NAME`    |     ✓     |      ✓      | Invoke a rule's targets right now (ECS / Lambda / SFN); `-dry-run` skips AWS |
 | `import-ecschedule` |     —     |      —      | Convert an ecschedule YAML to ebschedule format    |

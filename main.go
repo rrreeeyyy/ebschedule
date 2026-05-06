@@ -512,6 +512,13 @@ Exit codes:
 		if err := preflightCheck(ctx, cfgs); err != nil {
 			check(fmt.Errorf("pre-flight: %w", err))
 		}
+		// Verify every referenced ECS task definition actually exists
+		// before any EventBridge mutation, so a typo / deleted revision
+		// surfaces with a clean error rather than after a partial apply.
+		// Mirrors ecschedule's validateTaskDefinition behavior.
+		if err := verifyTaskDefinitionsForCfgs(ctx, cfgs); err != nil {
+			check(fmt.Errorf("pre-flight: %w", err))
+		}
 		if !dryRun && !autoApprove && stdinIsTTY() {
 			if !confirmApply(os.Stderr, os.Stdin) {
 				fmt.Fprintln(os.Stderr, "aborted")
@@ -930,9 +937,38 @@ func loadConfigsWithFuncs(pattern string, funcs template.FuncMap) ([]*Config, er
 		if err := expandShortcuts(&c); err != nil {
 			return nil, fmt.Errorf("%s: %w", f.path, err)
 		}
+		// Fail-fast on bad cron at load time, so apply / diff don't get
+		// part-way through before AWS rejects the rule. validate runs the
+		// same check (plus the rest), so it's still the right tool for
+		// surfacing every error at once; this short-circuits typos.
+		if err := preflightCronExpressions(&c); err != nil {
+			return nil, fmt.Errorf("%s: %w", f.path, err)
+		}
 		out = append(out, &c)
 	}
 	return out, nil
+}
+
+// preflightCronExpressions parses every Rule.scheduleExpression and
+// Schedule.scheduleExpression with the same validator validate uses, so
+// a malformed cron (e.g. out-of-range minute, missing year field) errors
+// during load instead of midway through apply. Stops on the first
+// error, with a path so the user can locate the offending entry.
+func preflightCronExpressions(c *Config) error {
+	for _, r := range c.Rules {
+		if r.ScheduleExpression == "" {
+			continue
+		}
+		if err := validateScheduleExpression(r.ScheduleExpression); err != nil {
+			return fmt.Errorf("rules[%s]: %w", r.Name, err)
+		}
+	}
+	for _, s := range c.Schedules {
+		if err := validateScheduleExpression(s.ScheduleExpression); err != nil {
+			return fmt.Errorf("schedules[%s]: %w", s.Name, err)
+		}
+	}
+	return nil
 }
 
 // resolveBaseFile reads BaseFile (if set) and inherits scalar fields the

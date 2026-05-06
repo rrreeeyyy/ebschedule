@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/winebarrel/cronplan"
 )
 
 // Resource name regex used by both EventBridge Rules and Scheduler Schedules.
@@ -14,8 +16,35 @@ import (
 // the API today shows it does, so we keep a single regex.
 var nameRe = regexp.MustCompile(`^[A-Za-z0-9_.\-]+$`)
 
-// Schedule expressions accepted by Scheduler / EventBridge.
+// Schedule expressions accepted by Scheduler / EventBridge. Used as a coarse
+// shape check before validateCronExpression does the real parse for cron().
 var schedExprRe = regexp.MustCompile(`^(cron|rate|at)\(.+\)\s*$`)
+
+// validateScheduleExpression checks the wrapper shape and, for cron(...),
+// runs cronplan against the inner expression so typos like an out-of-range
+// minute or a missing day-of-week field fail at load time rather than at
+// AWS-call time. rate(...) and at(...) get the regex-only check for now —
+// AWS rejects malformed ones with a clear API error, and the rate / at
+// grammar is small enough that the regex catches the common typos.
+func validateScheduleExpression(expr string) error {
+	if expr == "" {
+		return fmt.Errorf("scheduleExpression is empty")
+	}
+	if !schedExprRe.MatchString(expr) {
+		return fmt.Errorf("scheduleExpression %q must look like cron(...), rate(...) or at(...)", expr)
+	}
+	if !strings.HasPrefix(expr, "cron(") {
+		return nil
+	}
+	inner := strings.TrimSuffix(strings.TrimPrefix(expr, "cron("), ")")
+	if inner != strings.TrimSpace(inner) {
+		return fmt.Errorf("scheduleExpression %q has stray whitespace inside cron(...)", expr)
+	}
+	if _, err := cronplan.Parse(inner); err != nil {
+		return fmt.Errorf("scheduleExpression %q: %w", expr, err)
+	}
+	return nil
+}
 
 // Documented Scheduler defaults; canonicalizeSchedule drops user-side values
 // that match these so diff stays whitespace-and-default-insensitive.
@@ -98,8 +127,10 @@ func validateRule(r *Rule, path string) []string {
 	if r.ScheduleExpression != "" && r.EventPattern != "" {
 		errs = append(errs, fmt.Sprintf("%s: scheduleExpression and eventPattern are mutually exclusive", path))
 	}
-	if r.ScheduleExpression != "" && !schedExprRe.MatchString(r.ScheduleExpression) {
-		errs = append(errs, fmt.Sprintf("%s: scheduleExpression must look like cron(...) or rate(...)", path))
+	if r.ScheduleExpression != "" {
+		if err := validateScheduleExpression(r.ScheduleExpression); err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %s", path, err))
+		}
 	}
 	if r.EventPattern != "" {
 		if !json.Valid([]byte(r.EventPattern)) {
@@ -199,8 +230,8 @@ func validateSchedule(s *Schedule, path string) []string {
 
 	if s.ScheduleExpression == "" {
 		errs = append(errs, fmt.Sprintf("%s: scheduleExpression is required", path))
-	} else if !schedExprRe.MatchString(s.ScheduleExpression) {
-		errs = append(errs, fmt.Sprintf("%s: scheduleExpression must look like cron(...), rate(...) or at(...)", path))
+	} else if err := validateScheduleExpression(s.ScheduleExpression); err != nil {
+		errs = append(errs, fmt.Sprintf("%s: %s", path, err))
 	}
 	if s.ScheduleExpressionTimezone != "" {
 		if _, err := time.LoadLocation(s.ScheduleExpressionTimezone); err != nil {
