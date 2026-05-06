@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestResolveRoleArn(t *testing.T) {
@@ -170,7 +172,7 @@ func TestBuildContainerOverridesInput(t *testing.T) {
 			Cpu: &cpu,
 		},
 	}
-	out := buildContainerOverridesInput(overrides)
+	out := buildContainerOverridesInput(overrides, nil)
 
 	var parsed struct {
 		ContainerOverrides []struct {
@@ -194,5 +196,57 @@ func TestBuildContainerOverridesInput(t *testing.T) {
 	}
 	if len(co.Environment) != 1 || co.Environment[0].Name != "DEBUG" {
 		t.Errorf("env mismatch: %+v", co.Environment)
+	}
+}
+
+func TestBuildContainerOverridesInputWithTaskOverride(t *testing.T) {
+	to := &ecsTaskOverride{Cpu: "512", Memory: "1024"}
+	out := buildContainerOverridesInput(nil, to)
+	var parsed struct {
+		ContainerOverrides []any `json:"containerOverrides"`
+		TaskOverride       *struct {
+			Cpu, Memory string
+		} `json:"taskOverride"`
+	}
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatalf("not valid JSON: %v\n%s", err, out)
+	}
+	if len(parsed.ContainerOverrides) != 0 {
+		t.Errorf("containerOverrides should be omitted when nil, got %v", parsed.ContainerOverrides)
+	}
+	if parsed.TaskOverride == nil || parsed.TaskOverride.Cpu != "512" || parsed.TaskOverride.Memory != "1024" {
+		t.Errorf("taskOverride mismatch: %+v", parsed.TaskOverride)
+	}
+}
+
+func TestConvertEcscheduleCapturesTaskOverride(t *testing.T) {
+	src := []byte(`region: ap-northeast-1
+cluster: my-cluster
+rules:
+  - name: nightly
+    scheduleExpression: cron(0 18 * * ? *)
+    target:
+      taskDefinition: app:1
+      taskOverride:
+        cpu: "512"
+        memory: "1024"
+      containerOverrides:
+        - name: app
+          command: [migrate]
+`)
+	var parsed ecsConfig
+	if err := yaml.Unmarshal(src, &parsed); err != nil {
+		t.Fatalf("yaml: %v", err)
+	}
+	cfg := convertEcschedule(&parsed, "111111111111", "test")
+	if len(cfg.Rules) != 1 || len(cfg.Rules[0].Targets) != 1 {
+		t.Fatalf("unexpected shape: %+v", cfg)
+	}
+	in := string(cfg.Rules[0].Targets[0].Input)
+	if !strings.Contains(in, `"taskOverride":{"cpu":"512","memory":"1024"}`) {
+		t.Errorf("taskOverride missing from input: %s", in)
+	}
+	if !strings.Contains(in, `"containerOverrides":[{"name":"app"`) {
+		t.Errorf("containerOverrides missing from input: %s", in)
 	}
 }

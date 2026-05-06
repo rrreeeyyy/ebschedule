@@ -459,6 +459,13 @@ to `{}`), and `arn:aws:states:.../stateMachine:...` calls
 `sfn:StartExecution`. Other target types error with a clear "not a
 supported invocation type" message.
 
+For ECS targets, when `target.input` carries the ecschedule-shaped
+`{containerOverrides, taskOverride}` payload (the same JSON
+`import-ecschedule` writes), `run` translates it into RunTask
+`Overrides` so `run` matches what ecschedule's `run` does — same
+container Command / Environment / Cpu / Memory and task-level Cpu /
+Memory take effect.
+
 The flags mirror ecschedule's: `-rule NAME` is required, `-dry-run`
 prints what would be invoked without calling AWS, and the global
 `-conf` selects the config file.
