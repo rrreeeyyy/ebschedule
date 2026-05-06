@@ -26,6 +26,7 @@ AWS_PROFILE=my-sandbox AWS_ACCOUNT_ID=123456789012 \
 | [08-cluster-shorthand.yaml](./08-cluster-shorthand.yaml) | ecschedule-style top-level `cluster:` / `account:` shorthand; short names auto-expand to full ARNs |
 | [09-base-file/](./09-base-file/) | `baseFile:` inheritance: shared region / account / cluster / tags in `_base.yaml`, env-specific rules in `prod.yaml` / `staging.yaml` |
 | [10-tfstate.yaml](./10-tfstate.yaml) | `{{ tfstate "..." }}` lookup against a Terraform state file via `EBSCHEDULE_TFSTATE_URL` |
+| [11-jsonnet/](./11-jsonnet/) | Jsonnet config (`.jsonnet` / `.libsonnet`); env vars via `std.extVar`, imports, comprehensions |
 | [multi-file/](./multi-file/) | Glob-loaded configs: `-conf 'examples/multi-file/*.yaml'`; per-file trackingId keeps prune scoped per team |
 
 `_base.yaml` style files are referenced via `baseFile:`; they're never loaded

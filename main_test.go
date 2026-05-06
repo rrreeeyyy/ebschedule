@@ -815,6 +815,94 @@ func captureStderrFn(t *testing.T, fn func()) string {
 	return string(buf[:n])
 }
 
+func TestJsonnetConfigLoad(t *testing.T) {
+	t.Run("evaluates jsonnet and parses as Config", func(t *testing.T) {
+		dir := t.TempDir()
+		p := filepath.Join(dir, "conf.jsonnet")
+		body := `local stage = std.extVar("EBS_TEST_STAGE");
+{
+  region: "ap-northeast-1",
+  trackingId: "examples-jsonnet-" + stage,
+  rules: [
+    {
+      name: "example-jsonnet-" + stage,
+      scheduleExpression: "rate(1 hour)",
+      state: if stage == "prod" then "ENABLED" else "DISABLED",
+      targets: [
+        {
+          id: "lambda",
+          arn: "arn:aws:lambda:ap-northeast-1:1:function:f-" + stage,
+        },
+      ],
+    },
+  ],
+}
+`
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("EBS_TEST_STAGE", "prod")
+		cfgs, err := loadConfigs(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(cfgs) != 1 {
+			t.Fatalf("got %d configs, want 1", len(cfgs))
+		}
+		c := cfgs[0]
+		if c.TrackingID != "examples-jsonnet-prod" {
+			t.Errorf("trackingId = %q", c.TrackingID)
+		}
+		if len(c.Rules) != 1 || c.Rules[0].Name != "example-jsonnet-prod" || c.Rules[0].State != "ENABLED" {
+			t.Errorf("rule = %+v", c.Rules[0])
+		}
+	})
+
+	t.Run("syntax error surfaces with file path", func(t *testing.T) {
+		dir := t.TempDir()
+		p := filepath.Join(dir, "broken.jsonnet")
+		if err := os.WriteFile(p, []byte(`{ bad: [`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, err := loadConfigs(p)
+		if err == nil || !strings.Contains(err.Error(), "jsonnet") {
+			t.Errorf("expected jsonnet error, got %v", err)
+		}
+	})
+
+	t.Run("local imports resolve relative to file", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "_lib.libsonnet"),
+			[]byte(`{ targets: [{ id: "lambda", arn: "arn:aws:lambda:us-east-1:1:function:f" }] }`),
+			0o600); err != nil {
+			t.Fatal(err)
+		}
+		main := filepath.Join(dir, "conf.jsonnet")
+		body := `local lib = import "_lib.libsonnet";
+{
+  region: "us-east-1",
+  rules: [
+    {
+      name: "via-import",
+      scheduleExpression: "rate(1 hour)",
+      targets: lib.targets,
+    },
+  ],
+}
+`
+		if err := os.WriteFile(main, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfgs, err := loadConfigs(main)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfgs[0].Rules[0].Targets[0].ID != "lambda" {
+			t.Errorf("import not resolved: %+v", cfgs[0])
+		}
+	})
+}
+
 func TestExpandTemplate(t *testing.T) {
 	t.Setenv("EBS_TEST_VAR", "hello")
 	t.Run("env funcs", func(t *testing.T) {

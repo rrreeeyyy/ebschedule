@@ -34,6 +34,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/fujiwara/tfstate-lookup/tfstate"
+	jsonnet "github.com/google/go-jsonnet"
 	"github.com/pmezard/go-difflib/difflib"
 	"golang.org/x/term"
 	"gopkg.in/yaml.v3"
@@ -691,13 +692,49 @@ func expandFiles(pattern string, funcs template.FuncMap) ([]expandedFile, error)
 		if err != nil {
 			return nil, err
 		}
-		exp, err := expandTemplate(raw, funcs)
+		var exp []byte
+		if isJsonnet(p) {
+			// .jsonnet files run through go-jsonnet directly. Skipping
+			// text/template avoids surprising double substitution; jsonnet
+			// has its own std.extVar / std.env machinery.
+			exp, err = evalJsonnet(p, raw)
+		} else {
+			exp, err = expandTemplate(raw, funcs)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", p, err)
 		}
 		out = append(out, expandedFile{path: p, data: exp})
 	}
 	return out, nil
+}
+
+func isJsonnet(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	return ext == ".jsonnet" || ext == ".libsonnet"
+}
+
+// evalJsonnet runs go-jsonnet against raw source and returns the produced
+// JSON. Every entry from os.Environ() is exposed as an ext-string so the
+// jsonnet program can read them via std.extVar("NAME"); ext-strings
+// override std.env semantics across go-jsonnet versions and let scripts
+// stay environment-aware without our needing a custom native function.
+func evalJsonnet(path string, raw []byte) ([]byte, error) {
+	vm := jsonnet.MakeVM()
+	for _, e := range os.Environ() {
+		k, v, ok := strings.Cut(e, "=")
+		if !ok {
+			continue
+		}
+		vm.ExtVar(k, v)
+	}
+	importer := &jsonnet.FileImporter{JPaths: []string{filepath.Dir(path)}}
+	vm.Importer(importer)
+	json, err := vm.EvaluateAnonymousSnippet(path, string(raw))
+	if err != nil {
+		return nil, fmt.Errorf("jsonnet: %w", err)
+	}
+	return []byte(json), nil
 }
 
 func loadConfigs(pattern string) ([]*Config, error) {
