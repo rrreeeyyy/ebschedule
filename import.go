@@ -32,15 +32,23 @@ type ecsRule struct {
 }
 
 type ecsTarget struct {
-	TaskDefinition       string                 `yaml:"taskDefinition"`
-	TaskCount            int32                  `yaml:"taskCount,omitempty"`
-	LaunchType           string                 `yaml:"launchType,omitempty"`
-	PlatformVersion      string                 `yaml:"platformVersion,omitempty"`
-	PropagateTags        string                 `yaml:"propagateTags,omitempty"`
-	Group                string                 `yaml:"group,omitempty"`
-	Role                 string                 `yaml:"role,omitempty"`
-	NetworkConfiguration *ecsNetworkConfig      `yaml:"networkConfiguration,omitempty"`
-	ContainerOverrides   []ecsContainerOverride `yaml:"containerOverrides,omitempty"`
+	TaskDefinition           string                            `yaml:"taskDefinition"`
+	TaskCount                int32                             `yaml:"taskCount,omitempty"`
+	LaunchType               string                            `yaml:"launchType,omitempty"`
+	PlatformVersion          string                            `yaml:"platformVersion,omitempty"`
+	PropagateTags            string                            `yaml:"propagateTags,omitempty"`
+	Group                    string                            `yaml:"group,omitempty"`
+	Role                     string                            `yaml:"role,omitempty"`
+	NetworkConfiguration     *ecsNetworkConfig                 `yaml:"networkConfiguration,omitempty"`
+	ContainerOverrides       []ecsContainerOverride            `yaml:"containerOverrides,omitempty"`
+	CapacityProviderStrategy []ecsCapacityProviderStrategyItem `yaml:"capacityProviderStrategy,omitempty"`
+}
+
+// ecsCapacityProviderStrategyItem mirrors ecschedule's flat YAML shape.
+type ecsCapacityProviderStrategyItem struct {
+	CapacityProvider string `yaml:"capacityProvider"`
+	Base             int32  `yaml:"base,omitempty"`
+	Weight           int32  `yaml:"weight,omitempty"`
 }
 
 type ecsNetworkConfig struct {
@@ -196,6 +204,13 @@ func convertEcschedule(src *ecsConfig, account, trackingID string) *Config {
 			ep.Subnets = nc.AwsvpcConfiguration.Subnets
 			ep.SecurityGroups = nc.AwsvpcConfiguration.SecurityGroups
 			ep.AssignPublicIp = nc.AwsvpcConfiguration.AssignPublicIp
+		}
+		for _, c := range r.Target.CapacityProviderStrategy {
+			ep.CapacityProviderStrategy = append(ep.CapacityProviderStrategy, CapacityProviderStrategyItem{
+				CapacityProvider: c.CapacityProvider,
+				Base:             c.Base,
+				Weight:           c.Weight,
+			})
 		}
 		target.EcsParameters = ep
 

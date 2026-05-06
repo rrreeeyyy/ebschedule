@@ -227,6 +227,39 @@ func TestValidateRule_Targets(t *testing.T) {
 		r.Targets[0].InputTransformer = &InputTransformer{InputTemplate: `{"a":<a>}`}
 		wantSubstr(t, validateRule(r, "rule[0]:x"), "mutually exclusive")
 	})
+	t.Run("launchType + capacityProviderStrategy rejected", func(t *testing.T) {
+		r := validRule()
+		r.Targets[0].EcsParameters = &RuleEcsParameters{
+			TaskDefinitionArn:        "arn:aws:ecs:us-east-1:1:task-definition/x:1",
+			LaunchType:               "FARGATE",
+			CapacityProviderStrategy: []CapacityProviderStrategyItem{{CapacityProvider: "FARGATE_SPOT"}},
+		}
+		wantSubstr(t, validateRule(r, "rule[0]:x"), "launchType and capacityProviderStrategy are mutually exclusive")
+	})
+	t.Run("capacityProviderStrategy missing capacityProvider", func(t *testing.T) {
+		r := validRule()
+		r.Targets[0].EcsParameters = &RuleEcsParameters{
+			TaskDefinitionArn:        "arn:aws:ecs:us-east-1:1:task-definition/x:1",
+			CapacityProviderStrategy: []CapacityProviderStrategyItem{{Weight: 1}},
+		}
+		wantSubstr(t, validateRule(r, "rule[0]:x"), "capacityProviderStrategy[0].capacityProvider")
+	})
+	t.Run("placement constraint memberOf needs expression", func(t *testing.T) {
+		r := validRule()
+		r.Targets[0].EcsParameters = &RuleEcsParameters{
+			TaskDefinitionArn:    "arn:aws:ecs:us-east-1:1:task-definition/x:1",
+			PlacementConstraints: []PlacementConstraint{{Type: "memberOf"}},
+		}
+		wantSubstr(t, validateRule(r, "rule[0]:x"), "placementConstraints[0].expression")
+	})
+	t.Run("placement strategy invalid type", func(t *testing.T) {
+		r := validRule()
+		r.Targets[0].EcsParameters = &RuleEcsParameters{
+			TaskDefinitionArn: "arn:aws:ecs:us-east-1:1:task-definition/x:1",
+			PlacementStrategy: []PlacementStrategy{{Type: "lottery"}},
+		}
+		wantSubstr(t, validateRule(r, "rule[0]:x"), "placementStrategy[0].type")
+	})
 }
 
 func TestValidateSchedule_NewTargetParameters(t *testing.T) {

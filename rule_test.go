@@ -50,13 +50,30 @@ func fullTarget() *Target {
 		EcsParameters: &RuleEcsParameters{
 			TaskDefinitionArn: "arn:aws:ecs:us-east-1:1:task-definition/x:1",
 			TaskCount:         2,
-			LaunchType:        "FARGATE",
+			LaunchType:        "",
 			PlatformVersion:   "LATEST",
 			Subnets:           []string{"subnet-aaa", "subnet-bbb"},
 			SecurityGroups:    []string{"sg-x"},
 			AssignPublicIp:    "DISABLED",
 			Group:             "g",
 			PropagateTags:     "TASK_DEFINITION",
+			CapacityProviderStrategy: []CapacityProviderStrategyItem{
+				{CapacityProvider: "FARGATE_SPOT", Base: 0, Weight: 4},
+				{CapacityProvider: "FARGATE", Base: 1, Weight: 1},
+			},
+			EnableECSManagedTags: true,
+			EnableExecuteCommand: true,
+			PlacementConstraints: []PlacementConstraint{
+				{Type: "memberOf", Expression: "attribute:ecs.os-type == linux"},
+			},
+			PlacementStrategy: []PlacementStrategy{
+				{Type: "spread", Field: "attribute:ecs.availability-zone"},
+			},
+			ReferenceID: "ref-1",
+			Tags: []KeyValuePair{
+				{Name: "Owner", Value: "team-a"},
+				{Name: "Cost", Value: "data-pipeline"},
+			},
 		},
 		SqsParameters:     &SqsParameters{MessageGroupId: "fifo-1"},
 		KinesisParameters: &RuleKinesisParameters{PartitionKeyPath: "$.id"},

@@ -83,13 +83,22 @@ type ScheduleTarget struct {
 }
 
 type SchedEcsParameters struct {
-	TaskDefinitionArn string   `yaml:"taskDefinitionArn"`
-	TaskCount         int32    `yaml:"taskCount,omitempty"`
-	LaunchType        string   `yaml:"launchType,omitempty"`
-	PlatformVersion   string   `yaml:"platformVersion,omitempty"`
-	Subnets           []string `yaml:"subnets,omitempty"`
-	SecurityGroups    []string `yaml:"securityGroups,omitempty"`
-	AssignPublicIp    string   `yaml:"assignPublicIp,omitempty"`
+	TaskDefinitionArn        string                         `yaml:"taskDefinitionArn"`
+	TaskCount                int32                          `yaml:"taskCount,omitempty"`
+	LaunchType               string                         `yaml:"launchType,omitempty"`
+	PlatformVersion          string                         `yaml:"platformVersion,omitempty"`
+	Subnets                  []string                       `yaml:"subnets,omitempty"`
+	SecurityGroups           []string                       `yaml:"securityGroups,omitempty"`
+	AssignPublicIp           string                         `yaml:"assignPublicIp,omitempty"`
+	Group                    string                         `yaml:"group,omitempty"`
+	PropagateTags            string                         `yaml:"propagateTags,omitempty"` // TASK_DEFINITION
+	CapacityProviderStrategy []CapacityProviderStrategyItem `yaml:"capacityProviderStrategy,omitempty"`
+	EnableECSManagedTags     bool                           `yaml:"enableECSManagedTags,omitempty"`
+	EnableExecuteCommand     bool                           `yaml:"enableExecuteCommand,omitempty"`
+	PlacementConstraints     []PlacementConstraint          `yaml:"placementConstraints,omitempty"`
+	PlacementStrategy        []PlacementStrategy            `yaml:"placementStrategy,omitempty"`
+	ReferenceID              string                         `yaml:"referenceId,omitempty"`
+	Tags                     []KeyValuePair                 `yaml:"tags,omitempty"` // ECS task tags
 }
 
 // SchedKinesisParameters is the Scheduler shape: a literal partition key
@@ -231,15 +240,44 @@ func fromRemoteSchedTarget(t *schtypes.Target) *ScheduleTarget {
 	}
 	if t.EcsParameters != nil {
 		ep := &SchedEcsParameters{
-			TaskDefinitionArn: aws.ToString(t.EcsParameters.TaskDefinitionArn),
-			TaskCount:         aws.ToInt32(t.EcsParameters.TaskCount),
-			LaunchType:        string(t.EcsParameters.LaunchType),
-			PlatformVersion:   aws.ToString(t.EcsParameters.PlatformVersion),
+			TaskDefinitionArn:    aws.ToString(t.EcsParameters.TaskDefinitionArn),
+			TaskCount:            aws.ToInt32(t.EcsParameters.TaskCount),
+			LaunchType:           string(t.EcsParameters.LaunchType),
+			PlatformVersion:      aws.ToString(t.EcsParameters.PlatformVersion),
+			Group:                aws.ToString(t.EcsParameters.Group),
+			PropagateTags:        string(t.EcsParameters.PropagateTags),
+			EnableECSManagedTags: aws.ToBool(t.EcsParameters.EnableECSManagedTags),
+			EnableExecuteCommand: aws.ToBool(t.EcsParameters.EnableExecuteCommand),
+			ReferenceID:          aws.ToString(t.EcsParameters.ReferenceId),
 		}
 		if nc := t.EcsParameters.NetworkConfiguration; nc != nil && nc.AwsvpcConfiguration != nil {
 			ep.Subnets = nc.AwsvpcConfiguration.Subnets
 			ep.SecurityGroups = nc.AwsvpcConfiguration.SecurityGroups
 			ep.AssignPublicIp = string(nc.AwsvpcConfiguration.AssignPublicIp)
+		}
+		for _, c := range t.EcsParameters.CapacityProviderStrategy {
+			ep.CapacityProviderStrategy = append(ep.CapacityProviderStrategy, CapacityProviderStrategyItem{
+				CapacityProvider: aws.ToString(c.CapacityProvider),
+				Base:             c.Base,
+				Weight:           c.Weight,
+			})
+		}
+		for _, p := range t.EcsParameters.PlacementConstraints {
+			ep.PlacementConstraints = append(ep.PlacementConstraints, PlacementConstraint{
+				Type:       string(p.Type),
+				Expression: aws.ToString(p.Expression),
+			})
+		}
+		for _, p := range t.EcsParameters.PlacementStrategy {
+			ep.PlacementStrategy = append(ep.PlacementStrategy, PlacementStrategy{
+				Type:  string(p.Type),
+				Field: aws.ToString(p.Field),
+			})
+		}
+		// Scheduler returns ECS task tags as []map[string]string with a single
+		// {key, value} pair per map.
+		for _, m := range t.EcsParameters.Tags {
+			ep.Tags = append(ep.Tags, KeyValuePair{Name: m["key"], Value: m["value"]})
 		}
 		st.EcsParameters = ep
 	}
@@ -598,6 +636,12 @@ func toAWSSchedTarget(t *ScheduleTarget) (*schtypes.Target, error) {
 		if t.EcsParameters.PlatformVersion != "" {
 			ep.PlatformVersion = aws.String(t.EcsParameters.PlatformVersion)
 		}
+		if t.EcsParameters.Group != "" {
+			ep.Group = aws.String(t.EcsParameters.Group)
+		}
+		if t.EcsParameters.PropagateTags != "" {
+			ep.PropagateTags = schtypes.PropagateTags(t.EcsParameters.PropagateTags)
+		}
 		if len(t.EcsParameters.Subnets) > 0 {
 			ep.NetworkConfiguration = &schtypes.NetworkConfiguration{
 				AwsvpcConfiguration: &schtypes.AwsVpcConfiguration{
@@ -606,6 +650,39 @@ func toAWSSchedTarget(t *ScheduleTarget) (*schtypes.Target, error) {
 					AssignPublicIp: schtypes.AssignPublicIp(t.EcsParameters.AssignPublicIp),
 				},
 			}
+		}
+		for _, c := range t.EcsParameters.CapacityProviderStrategy {
+			ep.CapacityProviderStrategy = append(ep.CapacityProviderStrategy, schtypes.CapacityProviderStrategyItem{
+				CapacityProvider: aws.String(c.CapacityProvider),
+				Base:             c.Base,
+				Weight:           c.Weight,
+			})
+		}
+		if t.EcsParameters.EnableECSManagedTags {
+			ep.EnableECSManagedTags = aws.Bool(true)
+		}
+		if t.EcsParameters.EnableExecuteCommand {
+			ep.EnableExecuteCommand = aws.Bool(true)
+		}
+		for _, p := range t.EcsParameters.PlacementConstraints {
+			ep.PlacementConstraints = append(ep.PlacementConstraints, schtypes.PlacementConstraint{
+				Type:       schtypes.PlacementConstraintType(p.Type),
+				Expression: nilIfEmpty(p.Expression),
+			})
+		}
+		for _, p := range t.EcsParameters.PlacementStrategy {
+			ep.PlacementStrategy = append(ep.PlacementStrategy, schtypes.PlacementStrategy{
+				Type:  schtypes.PlacementStrategyType(p.Type),
+				Field: nilIfEmpty(p.Field),
+			})
+		}
+		if t.EcsParameters.ReferenceID != "" {
+			ep.ReferenceId = aws.String(t.EcsParameters.ReferenceID)
+		}
+		// Scheduler ECS task tags shape: []map[string]string with one
+		// {key, value} pair per element.
+		for _, kv := range t.EcsParameters.Tags {
+			ep.Tags = append(ep.Tags, map[string]string{"key": kv.Name, "value": kv.Value})
 		}
 		at.EcsParameters = ep
 	}
