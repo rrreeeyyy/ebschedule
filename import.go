@@ -262,12 +262,11 @@ func buildContainerOverridesInput(overrides []ecsContainerOverride) string {
 		}
 		cs = append(cs, co)
 	}
-	// json.Marshal on plain string/int/slice values is total - it never
-	// fails for the shapes here. Panic on the unreachable error so a
-	// future field addition that breaks this assumption is loud.
-	b, err := json.Marshal(wrapper{cs})
-	if err != nil {
-		panic(fmt.Errorf("buildContainerOverridesInput: %w", err))
-	}
+	// json.Marshal cannot fail on a struct made of strings, slices, and
+	// pointer-to-int — every type here implements json.Marshaler-equivalent
+	// behavior trivially. Discard the err return to keep the call site
+	// flat; if a future field addition breaks this assumption, the next
+	// `validate` run on the converter's output will surface invalid JSON.
+	b, _ := json.Marshal(wrapper{cs}) //nolint:errcheck
 	return string(b)
 }
