@@ -717,14 +717,27 @@ func isJsonnet(path string) bool {
 
 // evalJsonnet runs go-jsonnet against raw source and returns the produced
 // JSON. Env access is exposed via the kayac/ecspresso convention - native
-// functions `env(name, default)` and `must_env(name)`, called from jsonnet
-// as std.native("env")("NAME", "default") / std.native("must_env")("NAME").
+// functions called from jsonnet as std.native("name")(args...). The full
+// set parallels the YAML+template pipeline so users can write the same
+// kind of config in either format:
+//
+//	std.native("env")(name, default)    // env or default
+//	std.native("must_env")(name)         // env or error
+//	std.native("ssm")(name)              // SSM Parameter Store, decrypted
+//	std.native("tfstate")(resource)      // tfstate lookup (EBSCHEDULE_TFSTATE_URL)
+//	std.native("tfstatef")(fmt, args...) // tfstate sprintf-style helper
+//
 // ExtVar is intentionally left empty so it stays available for explicit
 // user-supplied --ext-str values (matching ecspresso semantics).
 func evalJsonnet(path string, raw []byte) ([]byte, error) {
+	ctx := context.Background()
 	vm := jsonnet.MakeVM()
 	vm.NativeFunction(jsonnetEnvFunc())
 	vm.NativeFunction(jsonnetMustEnvFunc())
+	vm.NativeFunction(jsonnetSsmFunc(ctx))
+	for _, f := range jsonnetTfstateFuncs(ctx) {
+		vm.NativeFunction(f)
+	}
 	importer := &jsonnet.FileImporter{JPaths: []string{filepath.Dir(path)}}
 	vm.Importer(importer)
 	json, err := vm.EvaluateAnonymousSnippet(path, string(raw))
@@ -769,6 +782,73 @@ func jsonnetMustEnvFunc() *jsonnet.NativeFunction {
 				return nil, fmt.Errorf("env var %s is not set", name)
 			}
 			return v, nil
+		},
+	}
+}
+
+// jsonnetSsmFunc registers `ssm(name)`: SSM Parameter Store value,
+// decrypted; mirrors the {{ ssm "/path" }} template func. Lazy-init
+// the SSM client per VM so calls without ssm references don't pay the
+// AWS-config-load cost.
+func jsonnetSsmFunc(ctx context.Context) *jsonnet.NativeFunction {
+	var client *ssm.Client
+	return &jsonnet.NativeFunction{
+		Name:   "ssm",
+		Params: []ast.Identifier{"name"},
+		Func: func(args []any) (any, error) {
+			name, ok := args[0].(string)
+			if !ok || name == "" {
+				return nil, fmt.Errorf("ssm: name must be a non-empty string")
+			}
+			if client == nil {
+				cfg, err := awsconfig.LoadDefaultConfig(ctx)
+				if err != nil {
+					return nil, fmt.Errorf("ssm: AWS config: %w", err)
+				}
+				client = ssm.NewFromConfig(cfg)
+			}
+			out, err := client.GetParameter(ctx, &ssm.GetParameterInput{
+				Name: aws.String(name), WithDecryption: aws.Bool(true),
+			})
+			if err != nil {
+				return nil, fmt.Errorf("ssm:%s: %w", name, err)
+			}
+			return aws.ToString(out.Parameter.Value), nil
+		},
+	}
+}
+
+// jsonnetTfstateFuncs registers `tfstate` and `tfstatef` (matching the
+// names that fujiwara/tfstate-lookup exposes for jsonnet). When
+// EBSCHEDULE_TFSTATE_URL is unset, a stub registers the same names but
+// errors loudly on use - same behavior as the runtimeFuncs path.
+func jsonnetTfstateFuncs(ctx context.Context) []*jsonnet.NativeFunction {
+	loc := os.Getenv(envTfstateURL)
+	if loc == "" {
+		return []*jsonnet.NativeFunction{
+			tfstateStub("tfstate", []ast.Identifier{"name"}),
+			tfstateStub("tfstatef", []ast.Identifier{"format"}),
+		}
+	}
+	funcs, err := tfstate.JsonnetNativeFuncs(ctx, "", loc)
+	if err != nil {
+		// State load failed; replace with stubs that surface the underlying
+		// error at use time rather than at VM construction.
+		msg := fmt.Sprintf("tfstate (%s): %v", loc, err)
+		return []*jsonnet.NativeFunction{
+			{Name: "tfstate", Params: []ast.Identifier{"name"}, Func: func([]any) (any, error) { return nil, errors.New(msg) }},
+			{Name: "tfstatef", Params: []ast.Identifier{"format"}, Func: func([]any) (any, error) { return nil, errors.New(msg) }},
+		}
+	}
+	return funcs
+}
+
+func tfstateStub(name string, params []ast.Identifier) *jsonnet.NativeFunction {
+	return &jsonnet.NativeFunction{
+		Name:   name,
+		Params: params,
+		Func: func([]any) (any, error) {
+			return nil, fmt.Errorf("%s template func used but %s is not set", name, envTfstateURL)
 		},
 	}
 }

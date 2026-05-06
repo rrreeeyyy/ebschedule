@@ -1,16 +1,17 @@
 // 11-jsonnet/conf.jsonnet: jsonnet alternative to YAML, picked up by the
-// `.jsonnet` (or `.libsonnet`) extension. Useful when the config grows
-// expressions, list comprehensions, or shared snippets across stages.
+// `.jsonnet` (or `.libsonnet`) extension.
 //
-// Env vars come in via the native funcs `env(name, default)` and
-// `must_env(name)` (matching ecspresso's convention). `local` bindings,
-// imports, and arithmetic give you the full programming model that pure
-// YAML lacks.
+// Native funcs (parallel to YAML's template funcs):
+//
+//   std.native('env')(name, default)    // env or default
+//   std.native('must_env')(name)         // env or error
+//   std.native('ssm')(name)              // SSM Parameter Store, decrypted
+//   std.native('tfstate')(resource)      // tfstate lookup (EBSCHEDULE_TFSTATE_URL)
 //
 //   AWS_ACCOUNT_ID=123 ebschedule -conf examples/11-jsonnet/conf.jsonnet validate
 
 local account = std.native('must_env')('AWS_ACCOUNT_ID');
-local region = 'ap-northeast-1';
+local region = std.native('env')('AWS_REGION', 'ap-northeast-1');
 local cluster = 'examples-cluster';
 
 local commonTarget = {
