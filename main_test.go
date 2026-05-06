@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"maps"
 	"os"
@@ -797,6 +798,64 @@ func TestApplySummary(t *testing.T) {
 			t.Errorf("expected '1 of 3 ... b.yaml' summary, got %q", out)
 		}
 	})
+}
+
+func TestAutoResolveAccountEnv(t *testing.T) {
+	t.Run("env already set: STS not consulted", func(t *testing.T) {
+		t.Setenv("AWS_ACCOUNT_ID", "111111111111")
+		called := false
+		swapSTSResolver(t, func(_ context.Context) (string, error) {
+			called = true
+			return "999999999999", nil
+		})
+		autoResolveAccountEnv(context.Background())
+		if called {
+			t.Error("STS resolver should not run when env is already set")
+		}
+		if got := os.Getenv("AWS_ACCOUNT_ID"); got != "111111111111" {
+			t.Errorf("env should be unchanged, got %s", got)
+		}
+	})
+	t.Run("env empty: STS fills it in", func(t *testing.T) {
+		t.Setenv("AWS_ACCOUNT_ID", "")
+		swapSTSResolver(t, func(_ context.Context) (string, error) {
+			return "888888888888", nil
+		})
+		autoResolveAccountEnv(context.Background())
+		if got := os.Getenv("AWS_ACCOUNT_ID"); got != "888888888888" {
+			t.Errorf("env should be set from STS, got %s", got)
+		}
+	})
+	t.Run("STS error: env stays empty", func(t *testing.T) {
+		t.Setenv("AWS_ACCOUNT_ID", "")
+		swapSTSResolver(t, func(_ context.Context) (string, error) {
+			return "", errors.New("expired credentials")
+		})
+		autoResolveAccountEnv(context.Background())
+		if got := os.Getenv("AWS_ACCOUNT_ID"); got != "" {
+			t.Errorf("env should remain empty on STS error, got %s", got)
+		}
+	})
+	t.Run("STS returns empty: env stays empty", func(t *testing.T) {
+		t.Setenv("AWS_ACCOUNT_ID", "")
+		swapSTSResolver(t, func(_ context.Context) (string, error) {
+			return "", nil
+		})
+		autoResolveAccountEnv(context.Background())
+		if got := os.Getenv("AWS_ACCOUNT_ID"); got != "" {
+			t.Errorf("env should remain empty on empty STS result, got %s", got)
+		}
+	})
+}
+
+// swapSTSResolver replaces the package-level stsAccountResolver for the
+// duration of one test, restoring the original on cleanup. Lets tests cover
+// the env-var-mutating path without standing up a real AWS client.
+func swapSTSResolver(t *testing.T, fn func(context.Context) (string, error)) {
+	t.Helper()
+	orig := stsAccountResolver
+	stsAccountResolver = fn
+	t.Cleanup(func() { stsAccountResolver = orig })
 }
 
 // captureStderrFn synchronously captures stderr for tests that don't
