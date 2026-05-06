@@ -26,9 +26,12 @@ jobs:
             echo "$out"
             exit 1
           fi
-      - run: go vet ./...
-      - run: go build ./...
-      - run: go test ./... -race -count=1
+      # Match the build tags used by goreleaser so CI exercises the same
+      # compilation surface release builds will (tfstate-lookup GCS / Azure
+      # backends excluded; S3 + local + http + TFE retained).
+      - run: go vet -tags=no_gcs,no_azurerm ./...
+      - run: go build -tags=no_gcs,no_azurerm ./...
+      - run: go test -tags=no_gcs,no_azurerm ./... -race -count=1
 
   lint:
     runs-on: ubuntu-latest

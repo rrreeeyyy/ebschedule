@@ -14,6 +14,10 @@ builds:
     goarch: [amd64, arm64]
     flags:
       - -trimpath
+      # tfstate-lookup brings GCS / Azurerm backends by default. Most
+      # ebschedule users won't need them; cut them out to slim the binary
+      # (~46MB -> ~30MB). S3 + local + http + Terraform Cloud (tfe) stay.
+      - -tags=no_gcs,no_azurerm
     ldflags:
       - -s -w
       - -X main.version={{ .Version }}

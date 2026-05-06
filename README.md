@@ -134,9 +134,10 @@ Under `validate`, AWS / tfstate is never called: `ssm` returns
 offline. Target ARN validation accepts those placeholders so a config
 pulling ARNs from tfstate validates without the URL set.
 
-`EBSCHEDULE_TFSTATE_URL` accepts a local path or any URL the
-fujiwara/tfstate-lookup library understands (file://, s3://, gs://,
-azurerm://, http(s)://, ...). See
+`EBSCHEDULE_TFSTATE_URL` accepts a local path, `s3://`, `http(s)://`,
+or a Terraform Cloud (`remote://`) workspace. GCS and Azurerm backends
+are intentionally excluded from release builds (`-tags=no_gcs,no_azurerm`)
+to slim the binary; rebuild without those tags if you need them. See
 [examples/10-tfstate.yaml](./examples/10-tfstate.yaml).
 
 ## Diff

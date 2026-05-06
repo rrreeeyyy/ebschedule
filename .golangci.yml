@@ -1,5 +1,12 @@
 version: "2"
 
+run:
+  # Match the build tags used by goreleaser / CI so the linter analyzes
+  # the same compilation surface release builds and CI tests do.
+  build-tags:
+    - no_gcs
+    - no_azurerm
+
 linters:
   default: standard
   enable:
