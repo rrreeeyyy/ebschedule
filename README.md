@@ -37,7 +37,9 @@ jobs:
           version: v0.1.0          # or "latest" (default)
       - run: ebschedule -conf config/ -prune apply
         env:
-          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+          # Account ID isn't a secret (it's visible in every IAM ARN);
+          # store it as a workflow / repo / org variable, not a secret.
+          AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
 ```
 
 Inputs: `version` (release tag or `latest`), `github-token` (defaults
