@@ -202,8 +202,13 @@ Anything already starting with `arn:` is left unchanged, so migration
 from ecschedule is incremental — flip whichever fields you want to short
 names; the rest can stay full ARN.
 
-`account:` defaults to `AWS_ACCOUNT_ID` env when omitted, so a single
-config can be reused across accounts. See
+`account:` defaults to `AWS_ACCOUNT_ID` env when omitted; if neither is
+set, online subcommands (`diff` / `apply` / `dump` / `run`) fill it in
+automatically via `sts:GetCallerIdentity` using the same credentials
+they'll use for the rest of the call. So a single config can be reused
+across accounts without explicit account wiring (matches ecschedule's
+behavior). `validate` and `import-ecschedule` skip the STS lookup so
+they stay offline. See
 [examples/08-cluster-shorthand.yaml](./examples/08-cluster-shorthand.yaml).
 
 ## `baseFile:` config inheritance

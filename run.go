@@ -412,6 +412,7 @@ func runRunSubcommand(ctx context.Context, out io.Writer, confPath string, globa
 	}
 	dryRun := globalDryRun || localDry
 
+	autoResolveAccountEnv(ctx)
 	cfgs, err := loadConfigs(confPath)
 	if err != nil {
 		return err

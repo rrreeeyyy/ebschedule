@@ -471,8 +471,10 @@ Exit codes:
 		if len(args) > 1 {
 			prefix = args[1]
 		}
+		autoResolveAccountEnv(ctx)
 		check(runDump(ctx, out, confPath, prefix, dumpTags))
 	case "diff":
+		autoResolveAccountEnv(ctx)
 		cfgs, err := loadConfigs(confPath)
 		check(err)
 		drift := false
@@ -500,6 +502,7 @@ Exit codes:
 		if targets.active() && prune {
 			check(fmt.Errorf("-target and -prune are mutually exclusive"))
 		}
+		autoResolveAccountEnv(ctx)
 		cfgs, err := loadConfigs(confPath)
 		check(err)
 		// Pre-flight runs even in -dry-run because dry-run still issues AWS
@@ -554,6 +557,44 @@ Exit codes:
 		flag.Usage()
 		os.Exit(exitErr)
 	}
+}
+
+// stsAccountResolver fetches the calling account ID via sts:GetCallerIdentity.
+// It's a package-level variable so tests can swap a fake without standing up
+// a real AWS client. The default uses the SDK's region-default chain because
+// GetCallerIdentity is a global call — the region argument is irrelevant.
+var stsAccountResolver = func(ctx context.Context) (string, error) {
+	awsCfg, err := loadAWS(ctx, "")
+	if err != nil {
+		return "", err
+	}
+	cli := sts.NewFromConfig(awsCfg)
+	out, err := cli.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
+	if err != nil {
+		return "", err
+	}
+	return aws.ToString(out.Account), nil
+}
+
+// autoResolveAccountEnv populates AWS_ACCOUNT_ID from sts:GetCallerIdentity
+// when the env var is empty. Online subcommands (diff/apply/dump/run) call
+// this before loadConfigs so configs that omit a top-level `account:` (the
+// common ecschedule shape) still resolve ARN shorthand correctly.
+//
+// On STS failure we leave the env var unset and continue silently:
+// expandShortcuts surfaces a clear "shorthand requires account" error if the
+// value is actually needed, and the upcoming preflightCheck will report any
+// real credential problem with full context. Calling it from validate /
+// import-ecschedule would defeat the offline guarantee, so they don't.
+func autoResolveAccountEnv(ctx context.Context) {
+	if os.Getenv("AWS_ACCOUNT_ID") != "" {
+		return
+	}
+	id, err := stsAccountResolver(ctx)
+	if err != nil || id == "" {
+		return
+	}
+	_ = os.Setenv("AWS_ACCOUNT_ID", id)
 }
 
 // preflightCheck verifies AWS credentials by calling sts:GetCallerIdentity
