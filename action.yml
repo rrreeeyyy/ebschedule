@@ -1,0 +1,74 @@
+name: setup-ebschedule
+description: Install ebschedule from GitHub Releases and add it to PATH.
+branding:
+  icon: clock
+  color: orange
+
+inputs:
+  version:
+    description: ebschedule version to install (e.g. v0.1.0). "latest" resolves to the most recent published release.
+    required: false
+    default: latest
+  github-token:
+    description: GitHub token used for API calls (release lookup). Defaults to the workflow's automatic token.
+    required: false
+    default: ${{ github.token }}
+  install-dir:
+    description: Directory to install the binary into. Must be writable by the runner and must already be on PATH.
+    required: false
+    default: /usr/local/bin
+
+runs:
+  using: composite
+  steps:
+    - name: Detect platform
+      shell: bash
+      run: |
+        os=$(uname -s | tr '[:upper:]' '[:lower:]')
+        case "$os" in
+          mingw*|msys*|cygwin*) os=windows ;;
+        esac
+        arch=$(uname -m)
+        case "$arch" in
+          x86_64|amd64) arch=amd64 ;;
+          aarch64|arm64) arch=arm64 ;;
+          *) echo "unsupported arch: $arch" >&2; exit 1 ;;
+        esac
+        echo "EBSCHEDULE_OS=$os" >> "$GITHUB_ENV"
+        echo "EBSCHEDULE_ARCH=$arch" >> "$GITHUB_ENV"
+
+    - name: Resolve version
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: |
+        ver="${{ inputs.version }}"
+        if [ "$ver" = "latest" ]; then
+          ver=$(gh api repos/rrreeeyyy/ebschedule/releases/latest --jq .tag_name)
+        fi
+        echo "EBSCHEDULE_VERSION=$ver" >> "$GITHUB_ENV"
+
+    - name: Download and install
+      shell: bash
+      run: |
+        ver_no_v="${EBSCHEDULE_VERSION#v}"
+        ext=tar.gz
+        if [ "$EBSCHEDULE_OS" = "windows" ]; then ext=zip; fi
+        archive="ebschedule_${ver_no_v}_${EBSCHEDULE_OS}_${EBSCHEDULE_ARCH}.${ext}"
+        url="https://github.com/rrreeeyyy/ebschedule/releases/download/${EBSCHEDULE_VERSION}/${archive}"
+        echo "downloading $url"
+        tmp=$(mktemp -d)
+        curl -fsSL -o "$tmp/$archive" "$url"
+        cd "$tmp"
+        if [ "$ext" = "zip" ]; then
+          unzip -q "$archive"
+        else
+          tar xzf "$archive"
+        fi
+        bin=ebschedule
+        if [ "$EBSCHEDULE_OS" = "windows" ]; then bin=ebschedule.exe; fi
+        install -m 0755 "$bin" "${{ inputs.install-dir }}/$bin"
+
+    - name: Verify
+      shell: bash
+      run: ebschedule -version
