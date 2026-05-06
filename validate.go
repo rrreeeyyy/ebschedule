@@ -156,15 +156,9 @@ func validateRule(r *Rule, path string) []string {
 			errs = append(errs, fmt.Sprintf("%s: input, inputPath, and inputTransformer are mutually exclusive", tp))
 		}
 		if t.EcsParameters != nil {
-			if t.EcsParameters.TaskDefinitionArn == "" {
-				errs = append(errs, fmt.Sprintf("%s.ecsParameters.taskDefinitionArn: is required", tp))
-			}
-			if lt := t.EcsParameters.LaunchType; lt != "" && lt != "EC2" && lt != "FARGATE" && lt != "EXTERNAL" {
-				errs = append(errs, fmt.Sprintf("%s.ecsParameters.launchType: must be EC2/FARGATE/EXTERNAL", tp))
-			}
-			if ap := t.EcsParameters.AssignPublicIp; ap != "" && ap != "ENABLED" && ap != "DISABLED" {
-				errs = append(errs, fmt.Sprintf("%s.ecsParameters.assignPublicIp: must be ENABLED or DISABLED", tp))
-			}
+			errs = append(errs, validateEcsCommon(t.EcsParameters.TaskDefinitionArn, t.EcsParameters.LaunchType, t.EcsParameters.AssignPublicIp,
+				t.EcsParameters.CapacityProviderStrategy, t.EcsParameters.PlacementConstraints, t.EcsParameters.PlacementStrategy,
+				tp+".ecsParameters")...)
 		}
 		if t.KinesisParameters != nil && t.KinesisParameters.PartitionKeyPath == "" {
 			errs = append(errs, fmt.Sprintf("%s.kinesisParameters.partitionKeyPath: is required", tp))
@@ -263,12 +257,10 @@ func validateSchedule(s *Schedule, path string) []string {
 		errs = append(errs, fmt.Sprintf("%s.input: not valid JSON", tp))
 	}
 	if s.Target.EcsParameters != nil {
-		if s.Target.EcsParameters.TaskDefinitionArn == "" {
-			errs = append(errs, fmt.Sprintf("%s.ecsParameters.taskDefinitionArn: is required", tp))
-		}
-		if lt := s.Target.EcsParameters.LaunchType; lt != "" && lt != "EC2" && lt != "FARGATE" && lt != "EXTERNAL" {
-			errs = append(errs, fmt.Sprintf("%s.ecsParameters.launchType: must be EC2/FARGATE/EXTERNAL", tp))
-		}
+		errs = append(errs, validateEcsCommon(s.Target.EcsParameters.TaskDefinitionArn, s.Target.EcsParameters.LaunchType,
+			s.Target.EcsParameters.AssignPublicIp, s.Target.EcsParameters.CapacityProviderStrategy,
+			s.Target.EcsParameters.PlacementConstraints, s.Target.EcsParameters.PlacementStrategy,
+			tp+".ecsParameters")...)
 	}
 	if s.Target.KinesisParameters != nil && s.Target.KinesisParameters.PartitionKey == "" {
 		errs = append(errs, fmt.Sprintf("%s.kinesisParameters.partitionKey: is required", tp))
@@ -278,6 +270,50 @@ func validateSchedule(s *Schedule, path string) []string {
 			if p.Name == "" {
 				errs = append(errs, fmt.Sprintf("%s.sageMakerPipelineParameters.pipelineParameterList[%d].name: is required", tp, j))
 			}
+		}
+	}
+	return errs
+}
+
+// validateEcsCommon covers the fields shared between RuleEcsParameters
+// and SchedEcsParameters. Both have the same enum constraints and the
+// same launchType / capacityProviderStrategy mutual-exclusion rule.
+func validateEcsCommon(
+	taskDefinitionArn, launchType, assignPublicIp string,
+	cps []CapacityProviderStrategyItem,
+	placementConstraints []PlacementConstraint,
+	placementStrategy []PlacementStrategy,
+	path string,
+) []string {
+	var errs []string
+	if taskDefinitionArn == "" {
+		errs = append(errs, fmt.Sprintf("%s.taskDefinitionArn: is required", path))
+	}
+	if launchType != "" && launchType != "EC2" && launchType != "FARGATE" && launchType != "EXTERNAL" {
+		errs = append(errs, fmt.Sprintf("%s.launchType: must be EC2/FARGATE/EXTERNAL", path))
+	}
+	if assignPublicIp != "" && assignPublicIp != "ENABLED" && assignPublicIp != "DISABLED" {
+		errs = append(errs, fmt.Sprintf("%s.assignPublicIp: must be ENABLED or DISABLED", path))
+	}
+	if launchType != "" && len(cps) > 0 {
+		errs = append(errs, fmt.Sprintf("%s: launchType and capacityProviderStrategy are mutually exclusive", path))
+	}
+	for j, c := range cps {
+		if c.CapacityProvider == "" {
+			errs = append(errs, fmt.Sprintf("%s.capacityProviderStrategy[%d].capacityProvider: is required", path, j))
+		}
+	}
+	for j, p := range placementConstraints {
+		if p.Type != "distinctInstance" && p.Type != "memberOf" {
+			errs = append(errs, fmt.Sprintf("%s.placementConstraints[%d].type: must be distinctInstance or memberOf", path, j))
+		}
+		if p.Type == "memberOf" && p.Expression == "" {
+			errs = append(errs, fmt.Sprintf("%s.placementConstraints[%d].expression: is required when type=memberOf", path, j))
+		}
+	}
+	for j, p := range placementStrategy {
+		if p.Type != "random" && p.Type != "spread" && p.Type != "binpack" {
+			errs = append(errs, fmt.Sprintf("%s.placementStrategy[%d].type: must be random/spread/binpack", path, j))
 		}
 	}
 	return errs

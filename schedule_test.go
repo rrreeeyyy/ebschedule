@@ -24,11 +24,28 @@ func fullScheduleTarget() *ScheduleTarget {
 		EcsParameters: &SchedEcsParameters{
 			TaskDefinitionArn: "arn:aws:ecs:us-east-1:1:task-definition/x:1",
 			TaskCount:         1,
-			LaunchType:        "FARGATE",
+			LaunchType:        "",
 			PlatformVersion:   "LATEST",
 			Subnets:           []string{"subnet-a"},
 			SecurityGroups:    []string{"sg-1"},
 			AssignPublicIp:    "DISABLED",
+			Group:             "g",
+			PropagateTags:     "TASK_DEFINITION",
+			CapacityProviderStrategy: []CapacityProviderStrategyItem{
+				{CapacityProvider: "FARGATE_SPOT", Weight: 4},
+			},
+			EnableECSManagedTags: true,
+			EnableExecuteCommand: true,
+			PlacementConstraints: []PlacementConstraint{
+				{Type: "distinctInstance"},
+			},
+			PlacementStrategy: []PlacementStrategy{
+				{Type: "binpack", Field: "memory"},
+			},
+			ReferenceID: "ref-sched",
+			Tags: []KeyValuePair{
+				{Name: "Owner", Value: "team-b"},
+			},
 		},
 		SqsParameters: &SqsParameters{
 			MessageGroupId: "g1",

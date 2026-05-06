@@ -66,15 +66,22 @@ type InputTransformer struct {
 }
 
 type RuleEcsParameters struct {
-	TaskDefinitionArn string   `yaml:"taskDefinitionArn"`
-	TaskCount         int32    `yaml:"taskCount,omitempty"`
-	LaunchType        string   `yaml:"launchType,omitempty"`
-	PlatformVersion   string   `yaml:"platformVersion,omitempty"`
-	Subnets           []string `yaml:"subnets,omitempty"`
-	SecurityGroups    []string `yaml:"securityGroups,omitempty"`
-	AssignPublicIp    string   `yaml:"assignPublicIp,omitempty"`
-	Group             string   `yaml:"group,omitempty"`
-	PropagateTags     string   `yaml:"propagateTags,omitempty"` // TASK_DEFINITION
+	TaskDefinitionArn        string                         `yaml:"taskDefinitionArn"`
+	TaskCount                int32                          `yaml:"taskCount,omitempty"`
+	LaunchType               string                         `yaml:"launchType,omitempty"`
+	PlatformVersion          string                         `yaml:"platformVersion,omitempty"`
+	Subnets                  []string                       `yaml:"subnets,omitempty"`
+	SecurityGroups           []string                       `yaml:"securityGroups,omitempty"`
+	AssignPublicIp           string                         `yaml:"assignPublicIp,omitempty"`
+	Group                    string                         `yaml:"group,omitempty"`
+	PropagateTags            string                         `yaml:"propagateTags,omitempty"` // TASK_DEFINITION
+	CapacityProviderStrategy []CapacityProviderStrategyItem `yaml:"capacityProviderStrategy,omitempty"`
+	EnableECSManagedTags     bool                           `yaml:"enableECSManagedTags,omitempty"`
+	EnableExecuteCommand     bool                           `yaml:"enableExecuteCommand,omitempty"`
+	PlacementConstraints     []PlacementConstraint          `yaml:"placementConstraints,omitempty"`
+	PlacementStrategy        []PlacementStrategy            `yaml:"placementStrategy,omitempty"`
+	ReferenceID              string                         `yaml:"referenceId,omitempty"`
+	Tags                     []KeyValuePair                 `yaml:"tags,omitempty"` // ECS task tags (separate from Rule tags)
 }
 
 // RuleKinesisParameters is the EventBridge Rule shape: a JSON path used to
@@ -196,17 +203,29 @@ func dumpRulesWith(ctx context.Context, cli ebAPI, bus, prefix string, tagFilter
 }
 
 // canonicalizeRule returns a copy of r prepared for diff/apply YAML
-// comparison: cfg.Tags merged in, Targets sorted by ID so target ordering
-// in the user's YAML doesn't surface as drift (listRuleTargets sorts the
-// remote side identically). Non-destructive.
+// comparison: cfg.Tags merged in, Targets sorted by ID, and per-target
+// ECS defaults stripped so user-written defaults compare equal to
+// AWS-returned defaults. Non-destructive.
 func canonicalizeRule(r *Rule, cfg *Config) *Rule {
 	out := *r
 	out.Tags = mergeTags(cfg.Tags, r.Tags)
-	if len(out.Targets) > 1 {
-		sorted := make([]*Target, len(out.Targets))
-		copy(sorted, out.Targets)
-		sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].ID < sorted[j].ID })
-		out.Targets = sorted
+	if len(out.Targets) > 0 {
+		copies := make([]*Target, 0, len(out.Targets))
+		for _, t := range out.Targets {
+			tc := *t
+			if tc.EcsParameters != nil {
+				ec := *tc.EcsParameters
+				// AWS treats taskCount=1 as the default for an ECS RunTask
+				// target; canonicalize to 0 (Go zero) on both sides.
+				if ec.TaskCount == 1 {
+					ec.TaskCount = 0
+				}
+				tc.EcsParameters = &ec
+			}
+			copies = append(copies, &tc)
+		}
+		sort.SliceStable(copies, func(i, j int) bool { return copies[i].ID < copies[j].ID })
+		out.Targets = copies
 	}
 	return &out
 }
@@ -277,17 +296,50 @@ func fromRemoteTarget(t ebtypes.Target) *Target {
 	}
 	if t.EcsParameters != nil {
 		ep := &RuleEcsParameters{
-			TaskDefinitionArn: aws.ToString(t.EcsParameters.TaskDefinitionArn),
-			TaskCount:         aws.ToInt32(t.EcsParameters.TaskCount),
-			LaunchType:        string(t.EcsParameters.LaunchType),
-			PlatformVersion:   aws.ToString(t.EcsParameters.PlatformVersion),
-			Group:             aws.ToString(t.EcsParameters.Group),
-			PropagateTags:     string(t.EcsParameters.PropagateTags),
+			TaskDefinitionArn:    aws.ToString(t.EcsParameters.TaskDefinitionArn),
+			TaskCount:            aws.ToInt32(t.EcsParameters.TaskCount),
+			LaunchType:           string(t.EcsParameters.LaunchType),
+			PlatformVersion:      aws.ToString(t.EcsParameters.PlatformVersion),
+			Group:                aws.ToString(t.EcsParameters.Group),
+			PropagateTags:        string(t.EcsParameters.PropagateTags),
+			EnableECSManagedTags: t.EcsParameters.EnableECSManagedTags,
+			EnableExecuteCommand: t.EcsParameters.EnableExecuteCommand,
+			ReferenceID:          aws.ToString(t.EcsParameters.ReferenceId),
+		}
+		// AWS returns taskCount=1 as the default whether or not the user set
+		// it. Strip on read so canonical comparison treats unset==1.
+		if ep.TaskCount == 1 {
+			ep.TaskCount = 0
 		}
 		if nc := t.EcsParameters.NetworkConfiguration; nc != nil && nc.AwsvpcConfiguration != nil {
 			ep.Subnets = nc.AwsvpcConfiguration.Subnets
 			ep.SecurityGroups = nc.AwsvpcConfiguration.SecurityGroups
 			ep.AssignPublicIp = string(nc.AwsvpcConfiguration.AssignPublicIp)
+		}
+		for _, c := range t.EcsParameters.CapacityProviderStrategy {
+			ep.CapacityProviderStrategy = append(ep.CapacityProviderStrategy, CapacityProviderStrategyItem{
+				CapacityProvider: aws.ToString(c.CapacityProvider),
+				Base:             c.Base,
+				Weight:           c.Weight,
+			})
+		}
+		for _, p := range t.EcsParameters.PlacementConstraints {
+			ep.PlacementConstraints = append(ep.PlacementConstraints, PlacementConstraint{
+				Type:       string(p.Type),
+				Expression: aws.ToString(p.Expression),
+			})
+		}
+		for _, p := range t.EcsParameters.PlacementStrategy {
+			ep.PlacementStrategy = append(ep.PlacementStrategy, PlacementStrategy{
+				Type:  string(p.Type),
+				Field: aws.ToString(p.Field),
+			})
+		}
+		for _, tg := range t.EcsParameters.Tags {
+			ep.Tags = append(ep.Tags, KeyValuePair{
+				Name:  aws.ToString(tg.Key),
+				Value: aws.ToString(tg.Value),
+			})
 		}
 		tgt.EcsParameters = ep
 	}
@@ -626,6 +678,40 @@ func toAWSTarget(t *Target) ebtypes.Target {
 					AssignPublicIp: ebtypes.AssignPublicIp(t.EcsParameters.AssignPublicIp),
 				},
 			}
+		}
+		for _, c := range t.EcsParameters.CapacityProviderStrategy {
+			ep.CapacityProviderStrategy = append(ep.CapacityProviderStrategy, ebtypes.CapacityProviderStrategyItem{
+				CapacityProvider: aws.String(c.CapacityProvider),
+				Base:             c.Base,
+				Weight:           c.Weight,
+			})
+		}
+		if t.EcsParameters.EnableECSManagedTags {
+			ep.EnableECSManagedTags = true
+		}
+		if t.EcsParameters.EnableExecuteCommand {
+			ep.EnableExecuteCommand = true
+		}
+		for _, p := range t.EcsParameters.PlacementConstraints {
+			ep.PlacementConstraints = append(ep.PlacementConstraints, ebtypes.PlacementConstraint{
+				Type:       ebtypes.PlacementConstraintType(p.Type),
+				Expression: nilIfEmpty(p.Expression),
+			})
+		}
+		for _, p := range t.EcsParameters.PlacementStrategy {
+			ep.PlacementStrategy = append(ep.PlacementStrategy, ebtypes.PlacementStrategy{
+				Type:  ebtypes.PlacementStrategyType(p.Type),
+				Field: nilIfEmpty(p.Field),
+			})
+		}
+		if t.EcsParameters.ReferenceID != "" {
+			ep.ReferenceId = aws.String(t.EcsParameters.ReferenceID)
+		}
+		for _, tg := range t.EcsParameters.Tags {
+			ep.Tags = append(ep.Tags, ebtypes.Tag{
+				Key:   aws.String(tg.Name),
+				Value: aws.String(tg.Value),
+			})
 		}
 		at.EcsParameters = ep
 	}
