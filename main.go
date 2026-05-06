@@ -77,8 +77,12 @@ type Config struct {
 	// short names in target.arn (cluster), ecsParameters.taskDefinitionArn,
 	// and target.roleArn are expanded to full ARNs at load time so the rest
 	// of the pipeline only sees canonical ARNs.
-	Account   string      `yaml:"account,omitempty"`
-	Cluster   string      `yaml:"cluster,omitempty"`
+	Account string `yaml:"account,omitempty"`
+	Cluster string `yaml:"cluster,omitempty"`
+	// BaseFile pulls inherited config (region / account / cluster / tags
+	// etc.) from a sibling YAML so per-team / per-service files can share
+	// common scaffolding. Path is resolved relative to this file.
+	BaseFile  string      `yaml:"baseFile,omitempty"`
 	Rules     []*Rule     `yaml:"rules,omitempty"`
 	Schedules []*Schedule `yaml:"schedules,omitempty"`
 
@@ -654,12 +658,92 @@ func loadConfigsWithFuncs(pattern string, funcs template.FuncMap) ([]*Config, er
 		if c.Rules == nil && c.Schedules == nil {
 			return nil, fmt.Errorf("%s: neither rules: nor schedules: present", f.path)
 		}
+		if err := resolveBaseFile(&c, funcs, map[string]bool{}); err != nil {
+			return nil, fmt.Errorf("%s: %w", f.path, err)
+		}
 		if err := expandShortcuts(&c); err != nil {
 			return nil, fmt.Errorf("%s: %w", f.path, err)
 		}
 		out = append(out, &c)
 	}
 	return out, nil
+}
+
+// resolveBaseFile reads BaseFile (if set) and inherits scalar fields the
+// child didn't set, plus merges Tags (child overrides on conflict). The
+// parent may itself declare a baseFile; recursion is bounded by `visited`
+// (keyed on absolute path) so cycles fail fast.
+//
+// Rules and Schedules are NEVER inherited - each file owns its own
+// resources, baseFile only shares the scaffolding (region / account /
+// cluster / groupName / eventBusName / trackingId / tags).
+func resolveBaseFile(c *Config, funcs template.FuncMap, visited map[string]bool) error {
+	if c.BaseFile == "" {
+		return nil
+	}
+	abs, err := filepath.Abs(filepath.Join(filepath.Dir(c.sourcePath), c.BaseFile))
+	if err != nil {
+		return fmt.Errorf("baseFile: %w", err)
+	}
+	if visited[abs] {
+		return fmt.Errorf("baseFile cycle detected at %s", abs)
+	}
+	visited[abs] = true
+
+	raw, err := os.ReadFile(abs)
+	if err != nil {
+		return fmt.Errorf("baseFile %s: %w", abs, err)
+	}
+	expanded, err := expandTemplate(raw, funcs)
+	if err != nil {
+		return fmt.Errorf("baseFile %s: %w", abs, err)
+	}
+	var base Config
+	dec := yaml.NewDecoder(bytes.NewReader(expanded))
+	dec.KnownFields(true)
+	if err := dec.Decode(&base); err != nil {
+		return fmt.Errorf("baseFile %s: %w", abs, err)
+	}
+	base.sourcePath = abs
+	// A baseFile is for shared scaffolding; declaring rules / schedules
+	// inside it is almost certainly a mistake (they would otherwise be
+	// silently ignored). Refuse rather than fail open.
+	if len(base.Rules) > 0 || len(base.Schedules) > 0 {
+		return fmt.Errorf("baseFile %s: must not declare rules: or schedules: (those belong in the child file)", abs)
+	}
+
+	// Recurse: parent may declare its own baseFile.
+	if err := resolveBaseFile(&base, funcs, visited); err != nil {
+		return err
+	}
+
+	// Inherit scalars the child left empty.
+	if c.Region == "" {
+		c.Region = base.Region
+	}
+	if c.Account == "" {
+		c.Account = base.Account
+	}
+	if c.Cluster == "" {
+		c.Cluster = base.Cluster
+	}
+	if c.GroupName == "" {
+		c.GroupName = base.GroupName
+	}
+	if c.EventBusName == "" {
+		c.EventBusName = base.EventBusName
+	}
+	if c.TrackingID == "" {
+		c.TrackingID = base.TrackingID
+	}
+	// Merge tags: parent provides defaults, child overrides on conflict.
+	if len(base.Tags) > 0 || len(c.Tags) > 0 {
+		merged := map[string]string{}
+		maps.Copy(merged, base.Tags)
+		maps.Copy(merged, c.Tags)
+		c.Tags = merged
+	}
+	return nil
 }
 
 // expandShortcuts rewrites ecschedule-style short names into full ARNs so
