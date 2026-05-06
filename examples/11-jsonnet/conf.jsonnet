@@ -2,13 +2,14 @@
 // `.jsonnet` (or `.libsonnet`) extension. Useful when the config grows
 // expressions, list comprehensions, or shared snippets across stages.
 //
-// Env vars come in via std.extVar (every os.Environ() entry is exposed).
-// `local` bindings, imports, and arithmetic give you the full programming
-// model that pure YAML lacks.
+// Env vars come in via the native funcs `env(name, default)` and
+// `must_env(name)` (matching ecspresso's convention). `local` bindings,
+// imports, and arithmetic give you the full programming model that pure
+// YAML lacks.
 //
 //   AWS_ACCOUNT_ID=123 ebschedule -conf examples/11-jsonnet/conf.jsonnet validate
 
-local account = std.extVar('AWS_ACCOUNT_ID');
+local account = std.native('must_env')('AWS_ACCOUNT_ID');
 local region = 'ap-northeast-1';
 local cluster = 'examples-cluster';
 

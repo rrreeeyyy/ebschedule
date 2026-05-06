@@ -230,7 +230,7 @@ result is parsed as Config. Useful when the config grows expressions,
 list comprehensions, or shared snippets across stages.
 
 ```jsonnet
-local account = std.extVar('AWS_ACCOUNT_ID');
+local account = std.native('must_env')('AWS_ACCOUNT_ID');
 local nightly(name, td) = {
   name: name,
   scheduleExpression: 'cron(0 18 * * ? *)',
@@ -253,12 +253,19 @@ local nightly(name, td) = {
 }
 ```
 
-Every entry from the process environment is exposed via `std.extVar`,
-so `std.extVar('AWS_ACCOUNT_ID')` works the same way `must_env` does in
-YAML. Local imports (`import './lib.libsonnet'`) resolve relative to
-the file. Text/template (`env` / `must_env` / `ssm` / `tfstate`) is
-**not** applied to jsonnet input — jsonnet has its own machinery, and
-mixing both invites confusion.
+Native funcs (matching kayac/ecspresso's convention):
+
+- `std.native('env')(name, default)` — env var or default
+- `std.native('must_env')(name)` — env var, errors if unset
+
+`std.extVar` is left for explicit user-supplied values (no automatic
+process-env dump, so the jsonnet sandbox doesn't see anything you
+didn't ask for). Local imports (`import './lib.libsonnet'`) resolve
+relative to the file.
+
+Text/template (`env` / `must_env` / `ssm` / `tfstate`) is **not**
+applied to jsonnet input — jsonnet has its own machinery, and mixing
+both invites confusion.
 
 See [examples/11-jsonnet/](./examples/11-jsonnet).
 

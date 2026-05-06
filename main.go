@@ -35,6 +35,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/fujiwara/tfstate-lookup/tfstate"
 	jsonnet "github.com/google/go-jsonnet"
+	"github.com/google/go-jsonnet/ast"
 	"github.com/pmezard/go-difflib/difflib"
 	"golang.org/x/term"
 	"gopkg.in/yaml.v3"
@@ -715,19 +716,15 @@ func isJsonnet(path string) bool {
 }
 
 // evalJsonnet runs go-jsonnet against raw source and returns the produced
-// JSON. Every entry from os.Environ() is exposed as an ext-string so the
-// jsonnet program can read them via std.extVar("NAME"); ext-strings
-// override std.env semantics across go-jsonnet versions and let scripts
-// stay environment-aware without our needing a custom native function.
+// JSON. Env access is exposed via the kayac/ecspresso convention - native
+// functions `env(name, default)` and `must_env(name)`, called from jsonnet
+// as std.native("env")("NAME", "default") / std.native("must_env")("NAME").
+// ExtVar is intentionally left empty so it stays available for explicit
+// user-supplied --ext-str values (matching ecspresso semantics).
 func evalJsonnet(path string, raw []byte) ([]byte, error) {
 	vm := jsonnet.MakeVM()
-	for _, e := range os.Environ() {
-		k, v, ok := strings.Cut(e, "=")
-		if !ok {
-			continue
-		}
-		vm.ExtVar(k, v)
-	}
+	vm.NativeFunction(jsonnetEnvFunc())
+	vm.NativeFunction(jsonnetMustEnvFunc())
 	importer := &jsonnet.FileImporter{JPaths: []string{filepath.Dir(path)}}
 	vm.Importer(importer)
 	json, err := vm.EvaluateAnonymousSnippet(path, string(raw))
@@ -735,6 +732,45 @@ func evalJsonnet(path string, raw []byte) ([]byte, error) {
 		return nil, fmt.Errorf("jsonnet: %w", err)
 	}
 	return []byte(json), nil
+}
+
+// jsonnetEnvFunc registers `env(name, default)`: returns the value of the
+// named env var, or `default` when unset.
+func jsonnetEnvFunc() *jsonnet.NativeFunction {
+	return &jsonnet.NativeFunction{
+		Name:   "env",
+		Params: []ast.Identifier{"name", "default"},
+		Func: func(args []any) (any, error) {
+			name, ok := args[0].(string)
+			if !ok {
+				return nil, fmt.Errorf("env: name must be a string")
+			}
+			if v, ok := os.LookupEnv(name); ok {
+				return v, nil
+			}
+			return args[1], nil
+		},
+	}
+}
+
+// jsonnetMustEnvFunc registers `must_env(name)`: returns the named env var
+// or errors at evaluation time when unset.
+func jsonnetMustEnvFunc() *jsonnet.NativeFunction {
+	return &jsonnet.NativeFunction{
+		Name:   "must_env",
+		Params: []ast.Identifier{"name"},
+		Func: func(args []any) (any, error) {
+			name, ok := args[0].(string)
+			if !ok {
+				return nil, fmt.Errorf("must_env: name must be a string")
+			}
+			v, ok := os.LookupEnv(name)
+			if !ok {
+				return nil, fmt.Errorf("env var %s is not set", name)
+			}
+			return v, nil
+		},
+	}
 }
 
 func loadConfigs(pattern string) ([]*Config, error) {

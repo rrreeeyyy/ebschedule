@@ -816,10 +816,10 @@ func captureStderrFn(t *testing.T, fn func()) string {
 }
 
 func TestJsonnetConfigLoad(t *testing.T) {
-	t.Run("evaluates jsonnet and parses as Config", func(t *testing.T) {
+	t.Run("evaluates jsonnet and parses as Config (must_env native)", func(t *testing.T) {
 		dir := t.TempDir()
 		p := filepath.Join(dir, "conf.jsonnet")
-		body := `local stage = std.extVar("EBS_TEST_STAGE");
+		body := `local stage = std.native("must_env")("EBS_TEST_STAGE");
 {
   region: "ap-northeast-1",
   trackingId: "examples-jsonnet-" + stage,
@@ -855,6 +855,50 @@ func TestJsonnetConfigLoad(t *testing.T) {
 		}
 		if len(c.Rules) != 1 || c.Rules[0].Name != "example-jsonnet-prod" || c.Rules[0].State != "ENABLED" {
 			t.Errorf("rule = %+v", c.Rules[0])
+		}
+	})
+
+	t.Run("env native returns default when unset", func(t *testing.T) {
+		dir := t.TempDir()
+		p := filepath.Join(dir, "conf.jsonnet")
+		body := `{
+  region: std.native("env")("EBS_TEST_REGION", "us-east-1"),
+  rules: [
+    {
+      name: "x",
+      scheduleExpression: "rate(1 hour)",
+      targets: [{ id: "t", arn: "arn:aws:lambda:us-east-1:1:function:f" }],
+    },
+  ],
+}
+`
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		// EBS_TEST_REGION explicitly unset; env() should return the default.
+		t.Setenv("EBS_TEST_REGION", "")
+		os.Unsetenv("EBS_TEST_REGION")
+		cfgs, err := loadConfigs(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfgs[0].Region != "us-east-1" {
+			t.Errorf("env default not applied: region=%q", cfgs[0].Region)
+		}
+	})
+
+	t.Run("must_env errors when unset", func(t *testing.T) {
+		dir := t.TempDir()
+		p := filepath.Join(dir, "conf.jsonnet")
+		if err := os.WriteFile(p, []byte(
+			`{ region: std.native("must_env")("EBS_DEFINITELY_UNSET"), rules: [] }`,
+		), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		os.Unsetenv("EBS_DEFINITELY_UNSET")
+		_, err := loadConfigs(p)
+		if err == nil || !strings.Contains(err.Error(), "EBS_DEFINITELY_UNSET") {
+			t.Errorf("expected must_env error, got %v", err)
 		}
 	})
 
