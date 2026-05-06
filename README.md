@@ -146,12 +146,13 @@ groupName: my-app    # ebschedule-owned group (auto-created on first apply)
 
 Config files run through `text/template` **before** YAML parsing:
 
-| Func                            | Notes                                                            |
-| ------------------------------- | ---------------------------------------------------------------- |
-| `{{ env "X" }}`                 | Empty string if `X` is unset                                     |
-| `{{ must_env "X" }}`            | Errors out (or placeholder under `validate`)                     |
-| `{{ ssm "/p/k" }}`              | SSM Parameter Store, decrypted, region from AWS creds            |
-| `{{ tfstate "type.name.attr" }}`| Terraform state lookup; needs `EBSCHEDULE_TFSTATE_URL` env       |
+| Func                              | Notes                                                                                          |
+| --------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `{{ env "X" }}`                   | Empty string if `X` is unset                                                                   |
+| `{{ must_env "X" }}`              | Errors out (or placeholder under `validate`)                                                   |
+| `{{ ssm "/p/k" }}`                | SSM Parameter Store, decrypted, region from AWS creds                                          |
+| `{{ tfstate "type.name.attr" }}`  | Terraform state lookup; needs `EBSCHEDULE_TFSTATE_URL` env                                     |
+| `{{ tfstatef "type.%s.attr" x }}` | sprintf-style tfstate helper from `fujiwara/tfstate-lookup`; same `EBSCHEDULE_TFSTATE_URL` env |
 
 Under `validate`, AWS / tfstate is never called: `ssm` returns
 `<ssm:/path>`, `tfstate` returns `<tfstate:type.name.attr>`, and

@@ -1,15 +1,24 @@
 # Examples
 
 Each YAML here is a self-contained config that demonstrates one capability.
-All examples reference `{{ must_env "AWS_ACCOUNT_ID" }}` so they pass
-`ebschedule validate` without you exporting anything; to actually `apply`,
-set `AWS_ACCOUNT_ID` in your shell.
+The YAML examples reference `{{ must_env "AWS_ACCOUNT_ID" }}` and pass
+`ebschedule validate` offline (under `validate`, the template `must_env`
+falls back to a `<env:AWS_ACCOUNT_ID>` placeholder that satisfies the ARN
+check). The jsonnet example uses jsonnet's `std.native('must_env')` and
+needs `AWS_ACCOUNT_ID` exported for `validate` too. For
+`apply` / `diff` / `dump` / `run`, ebschedule auto-fills `AWS_ACCOUNT_ID`
+from `sts:GetCallerIdentity` if the env var is unset, so you don't need to
+export it explicitly when running against the calling account.
 
 ```sh
 # Walk through any example without hitting AWS:
 ebschedule -conf examples/03-schedule-cron-timezone.yaml validate
 
-# Run for real (sandbox account):
+# Run for real against the calling account (account auto-resolved via STS):
+AWS_PROFILE=my-sandbox \
+  ebschedule -conf examples/03-schedule-cron-timezone.yaml apply
+
+# Or pin AWS_ACCOUNT_ID explicitly for cross-account or CI:
 AWS_PROFILE=my-sandbox AWS_ACCOUNT_ID=123456789012 \
   ebschedule -conf examples/03-schedule-cron-timezone.yaml apply
 ```
@@ -26,7 +35,7 @@ AWS_PROFILE=my-sandbox AWS_ACCOUNT_ID=123456789012 \
 | [08-cluster-shorthand.yaml](./08-cluster-shorthand.yaml) | ecschedule-style top-level `cluster:` / `account:` shorthand; short names auto-expand to full ARNs |
 | [09-base-file/](./09-base-file/) | `baseFile:` inheritance: shared region / account / cluster / tags in `_base.yaml`, env-specific rules in `prod.yaml` / `staging.yaml` |
 | [10-tfstate.yaml](./10-tfstate.yaml) | `{{ tfstate "..." }}` lookup against a Terraform state file via `EBSCHEDULE_TFSTATE_URL` |
-| [11-jsonnet/](./11-jsonnet/) | Jsonnet config (`.jsonnet` / `.libsonnet`); env vars via `std.extVar`, imports, comprehensions |
+| [11-jsonnet/](./11-jsonnet/) | Jsonnet config (`.jsonnet` / `.libsonnet`); env / SSM / tfstate via `std.native('env'\|'must_env'\|'ssm'\|'tfstate')`, imports, comprehensions |
 | [multi-file/](./multi-file/) | Glob-loaded configs: `-conf 'examples/multi-file/*.yaml'`; per-file trackingId keeps prune scoped per team |
 
 `_base.yaml` style files are referenced via `baseFile:`; they're never loaded

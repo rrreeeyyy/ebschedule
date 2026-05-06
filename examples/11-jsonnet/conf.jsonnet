@@ -3,10 +3,11 @@
 //
 // Native funcs (parallel to YAML's template funcs):
 //
-//   std.native('env')(name, default)    // env or default
+//   std.native('env')(name, default)     // env or default
 //   std.native('must_env')(name)         // env or error
 //   std.native('ssm')(name)              // SSM Parameter Store, decrypted
 //   std.native('tfstate')(resource)      // tfstate lookup (EBSCHEDULE_TFSTATE_URL)
+//   std.native('tfstatef')(fmt, args...) // tfstate sprintf-style helper
 //
 //   AWS_ACCOUNT_ID=123 ebschedule -conf examples/11-jsonnet/conf.jsonnet validate
 
