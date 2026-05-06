@@ -87,6 +87,7 @@ Rules and Schedules.
 | `diff`              |     ✓     |      —      | Unified-diff per resource; exits 2 on drift        |
 | `apply`             |     ✓     |      ✓      | Create / update; `-dry-run` keeps it read-only     |
 | `-prune apply`      |     ✓     |      ✓      | Apply + delete tracked resources missing from config |
+| `run -rule NAME`    |     ✓     |      ✓      | Invoke a rule's targets right now (ECS / Lambda / SFN); `-dry-run` skips AWS |
 | `import-ecschedule` |     —     |      —      | Convert an ecschedule YAML to ebschedule format    |
 
 ## Config semantics: omitted vs. empty
@@ -439,6 +440,28 @@ ebschedule -conf my-app.yaml \
 `-target` and `-prune` are mutually exclusive (partial-target +
 whole-config sweep would be incoherent). Naming a resource the config
 doesn't define errors out rather than silently skipping.
+
+### Running a rule on demand
+
+`run -rule NAME` invokes a rule's targets immediately, without waiting
+for its `scheduleExpression`. Useful for re-running a missed nightly
+batch or for smoke-testing a new rule:
+
+```sh
+ebschedule -conf ebschedule.yaml run -rule example-nightly-etl
+ebschedule -conf ebschedule.yaml -dry-run run -rule example-nightly-etl
+```
+
+Dispatch is by target ARN: `arn:aws:ecs:.../cluster/...` (with
+`ecsParameters`) calls `ecs:RunTask`, `arn:aws:lambda:.../function:...`
+calls `lambda:Invoke` (passing `target.input` as the payload, defaulting
+to `{}`), and `arn:aws:states:.../stateMachine:...` calls
+`sfn:StartExecution`. Other target types error with a clear "not a
+supported invocation type" message.
+
+The flags mirror ecschedule's: `-rule NAME` is required, `-dry-run`
+prints what would be invoked without calling AWS, and the global
+`-conf` selects the config file.
 
 ### Splitting per-team or per-service
 
