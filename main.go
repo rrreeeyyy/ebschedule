@@ -693,7 +693,7 @@ func expandShortcuts(c *Config) error {
 			return name, nil
 		}
 		if region == "" || account == "" {
-			return "", fmt.Errorf("ECS target.arn shorthand %q requires top-level region: + account:", name)
+			return "", fmt.Errorf("ECS target.arn shorthand %q requires top-level region and account", name)
 		}
 		return fmt.Sprintf("arn:aws:ecs:%s:%s:cluster/%s", region, account, name), nil
 	}
@@ -703,7 +703,7 @@ func expandShortcuts(c *Config) error {
 			return td, nil
 		}
 		if region == "" || account == "" {
-			return "", fmt.Errorf("ecsParameters.taskDefinitionArn shorthand %q requires top-level region: + account:", td)
+			return "", fmt.Errorf("ecsParameters.taskDefinitionArn shorthand %q requires top-level region and account", td)
 		}
 		return fmt.Sprintf("arn:aws:ecs:%s:%s:task-definition/%s", region, account, td), nil
 	}
