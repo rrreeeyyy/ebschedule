@@ -250,3 +250,104 @@ rules:
 		t.Errorf("containerOverrides missing from input: %s", in)
 	}
 }
+
+func TestConvertEcscheduleRoleFallback(t *testing.T) {
+	cases := []struct {
+		name        string
+		yaml        string
+		wantRoleArn string
+	}{
+		{
+			name: "per-target role wins",
+			yaml: `region: ap-northeast-1
+cluster: c
+role: top-role
+rules:
+  - name: r
+    scheduleExpression: cron(0 0 * * ? *)
+    target:
+      taskDefinition: app:1
+      role: target-role
+`,
+			wantRoleArn: "arn:aws:iam::111111111111:role/target-role",
+		},
+		{
+			name: "top-level role fallback",
+			yaml: `region: ap-northeast-1
+cluster: c
+role: top-role
+rules:
+  - name: r
+    scheduleExpression: cron(0 0 * * ? *)
+    target:
+      taskDefinition: app:1
+`,
+			wantRoleArn: "arn:aws:iam::111111111111:role/top-role",
+		},
+		{
+			name: "ecsEventsRole default when nothing set",
+			yaml: `region: ap-northeast-1
+cluster: c
+rules:
+  - name: r
+    scheduleExpression: cron(0 0 * * ? *)
+    target:
+      taskDefinition: app:1
+`,
+			wantRoleArn: "arn:aws:iam::111111111111:role/ecsEventsRole",
+		},
+		{
+			name: "explicit role ARN passthrough",
+			yaml: `region: ap-northeast-1
+cluster: c
+rules:
+  - name: r
+    scheduleExpression: cron(0 0 * * ? *)
+    target:
+      taskDefinition: app:1
+      role: arn:aws:iam::999:role/Custom
+`,
+			wantRoleArn: "arn:aws:iam::999:role/Custom",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var parsed ecsConfig
+			if err := yaml.Unmarshal([]byte(tc.yaml), &parsed); err != nil {
+				t.Fatalf("yaml: %v", err)
+			}
+			cfg := convertEcschedule(&parsed, "111111111111", "test")
+			if len(cfg.Rules) != 1 || len(cfg.Rules[0].Targets) != 1 {
+				t.Fatalf("unexpected shape: %+v", cfg)
+			}
+			got := cfg.Rules[0].Targets[0].RoleArn
+			if got != tc.wantRoleArn {
+				t.Errorf("roleArn: want %s, got %s", tc.wantRoleArn, got)
+			}
+		})
+	}
+}
+
+func TestConvertEcscheduleCapturesPluginsBlock(t *testing.T) {
+	src := []byte(`region: ap-northeast-1
+cluster: c
+plugins:
+  - name: tfstate
+    config:
+      url: s3://bucket/state.tfstate
+rules: []
+`)
+	var parsed ecsConfig
+	if err := yaml.Unmarshal(src, &parsed); err != nil {
+		t.Fatalf("yaml: %v", err)
+	}
+	if len(parsed.Plugins) != 1 || parsed.Plugins[0].Name != "tfstate" {
+		t.Fatalf("plugins not parsed: %+v", parsed.Plugins)
+	}
+	// Conversion itself must succeed; the warning goes to stderr and
+	// is checked by the integration-style test below if needed.
+	cfg := convertEcschedule(&parsed, "1", "test")
+	if cfg == nil {
+		t.Fatal("convert returned nil")
+	}
+}
