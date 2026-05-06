@@ -11,8 +11,10 @@ tags:
 rules:
   - name: shared-on-s3-upload
     eventPattern:
-      source: [aws.s3]
-      detail-type: [Object Created]
+      source:
+        - aws.s3
+      detail-type:
+        - Object Created
     state: ENABLED
     targets:
       - id: lambda
