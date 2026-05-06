@@ -1,0 +1,23 @@
+# 09-base-file/prod.yaml: production rules inheriting region / account /
+# cluster / tags from _base.yaml. Combined with cluster-shorthand (G3) the
+# child file shrinks to just the resources you actually own.
+
+baseFile: _base.yaml
+trackingId: my-app-prod
+tags:
+  Env: prod
+
+rules:
+  - name: my-app-prod-nightly
+    scheduleExpression: cron(0 18 * * ? *)
+    state: ENABLED
+    targets:
+      - id: ecs
+        # arn: omitted; cluster shortcut from _base.yaml fires
+        roleArn: ecsEventsRole
+        ecsParameters:
+          taskDefinitionArn: my-app-prod-batch
+          launchType: FARGATE
+          subnets: [subnet-aaa, subnet-bbb]
+          securityGroups: [sg-egress]
+          assignPublicIp: DISABLED

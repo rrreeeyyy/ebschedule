@@ -172,6 +172,48 @@ names; the rest can stay full ARN.
 config can be reused across accounts. See
 [examples/08-cluster-shorthand.yaml](./examples/08-cluster-shorthand.yaml).
 
+## `baseFile:` config inheritance
+
+Share scaffolding (region / account / cluster / groupName /
+eventBusName / trackingId / tags) across multiple ebschedule yamls
+without copy-pasting:
+
+```yaml
+# _base.yaml — shared scaffolding only, no rules: / schedules:
+region: ap-northeast-1
+account: '{{ must_env "AWS_ACCOUNT_ID" }}'
+cluster: my-cluster
+tags:
+  Service: my-app
+```
+
+```yaml
+# prod.yaml — pulls scaffolding from _base.yaml; child wins on conflict
+baseFile: _base.yaml
+trackingId: my-app-prod
+tags: { Env: prod }
+rules:
+  - name: nightly
+    scheduleExpression: cron(0 18 * * ? *)
+    targets:
+      - id: ecs
+        roleArn: ecsEventsRole          # cluster-shorthand still works
+        ecsParameters:
+          taskDefinitionArn: my-app-prod-batch
+          launchType: FARGATE
+```
+
+`baseFile:` is resolved relative to the child's path. Tags merge (child
+overrides on conflict); scalars inherit only when the child left them
+empty. Recursive parents (parent has its own `baseFile:`) are supported;
+cycles are detected and rejected.
+
+A baseFile may not declare `rules:` or `schedules:` — they belong in
+the leaf file. Files referenced via `baseFile:` are never loaded
+directly, so don't glob include them in `-conf '...*.yaml'` patterns.
+
+See [examples/09-base-file/](./examples/09-base-file).
+
 ## Strict YAML
 
 Unknown fields fail with a line-numbered error rather than being

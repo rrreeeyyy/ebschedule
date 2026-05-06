@@ -332,6 +332,146 @@ func TestTargetFlag_Filter(t *testing.T) {
 	})
 }
 
+func TestResolveBaseFile(t *testing.T) {
+	t.Run("inherits scalars and merges tags", func(t *testing.T) {
+		dir := t.TempDir()
+		base := filepath.Join(dir, "base.yaml")
+		if err := os.WriteFile(base, []byte(`
+region: ap-northeast-1
+account: "111122223333"
+cluster: shared-cluster
+trackingId: shared-id
+tags:
+  Owner: platform
+  Env: prod
+`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		child := filepath.Join(dir, "child.yaml")
+		if err := os.WriteFile(child, []byte(`
+baseFile: base.yaml
+tags:
+  Env: stg               # child overrides
+  Service: my-app        # child adds
+rules:
+  - name: x
+    scheduleExpression: rate(1 hour)
+    targets:
+      - id: t
+        arn: arn:aws:lambda:us-east-1:1:function:f
+`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfgs, err := loadConfigs(child)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c := cfgs[0]
+		if c.Region != "ap-northeast-1" || c.Account != "111122223333" || c.Cluster != "shared-cluster" || c.TrackingID != "shared-id" {
+			t.Errorf("scalar inherit failed: %+v", c)
+		}
+		// Tags: Env overridden by child, Owner inherited, Service added.
+		if c.Tags["Env"] != "stg" || c.Tags["Owner"] != "platform" || c.Tags["Service"] != "my-app" {
+			t.Errorf("tag merge failed: %+v", c.Tags)
+		}
+	})
+
+	t.Run("child wins on scalar conflict", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, filepath.Join(dir, "base.yaml"), `
+region: us-east-1
+trackingId: parent
+`)
+		writeFile(t, filepath.Join(dir, "child.yaml"), `
+baseFile: base.yaml
+region: ap-northeast-1
+trackingId: child
+rules:
+  - name: x
+    scheduleExpression: rate(1 hour)
+    targets:
+      - id: t
+        arn: arn:aws:lambda:us-east-1:1:function:f
+`)
+		cfgs, err := loadConfigs(filepath.Join(dir, "child.yaml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfgs[0].Region != "ap-northeast-1" || cfgs[0].TrackingID != "child" {
+			t.Errorf("child should win on scalar conflict: %+v", cfgs[0])
+		}
+	})
+
+	t.Run("base file with rules is rejected", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, filepath.Join(dir, "base.yaml"), `
+region: us-east-1
+rules:
+  - name: ghost
+    scheduleExpression: rate(1 hour)
+    targets:
+      - id: t
+        arn: arn:aws:lambda:us-east-1:1:function:f
+`)
+		writeFile(t, filepath.Join(dir, "child.yaml"), `
+baseFile: base.yaml
+schedules: []
+`)
+		_, err := loadConfigs(filepath.Join(dir, "child.yaml"))
+		if err == nil || !strings.Contains(err.Error(), "must not declare rules") {
+			t.Errorf("expected base-with-rules rejection, got %v", err)
+		}
+	})
+
+	t.Run("cycle detection", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, filepath.Join(dir, "a.yaml"), `
+baseFile: b.yaml
+schedules: []
+`)
+		writeFile(t, filepath.Join(dir, "b.yaml"), `
+baseFile: a.yaml
+`)
+		_, err := loadConfigs(filepath.Join(dir, "a.yaml"))
+		if err == nil || !strings.Contains(err.Error(), "cycle") {
+			t.Errorf("expected cycle error, got %v", err)
+		}
+	})
+
+	t.Run("recursive inherit (a -> b -> c)", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, filepath.Join(dir, "c.yaml"), `
+region: ap-northeast-1
+account: "111"
+`)
+		writeFile(t, filepath.Join(dir, "b.yaml"), `
+baseFile: c.yaml
+cluster: shared
+`)
+		writeFile(t, filepath.Join(dir, "a.yaml"), `
+baseFile: b.yaml
+schedules: []
+`)
+		cfgs, err := loadConfigs(filepath.Join(dir, "a.yaml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		c := cfgs[0]
+		if c.Region != "ap-northeast-1" || c.Account != "111" || c.Cluster != "shared" {
+			t.Errorf("recursive inherit failed: %+v", c)
+		}
+	})
+}
+
+// writeFile is a small test helper that fails the test on any
+// os.WriteFile error, so the tests above can stay flat.
+func writeFile(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestExpandShortcuts(t *testing.T) {
 	t.Run("full ARNs untouched", func(t *testing.T) {
 		c := &Config{
