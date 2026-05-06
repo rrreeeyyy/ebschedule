@@ -553,7 +553,7 @@ Exit codes:
 			fmt.Fprintf(os.Stderr, "applied %d config file(s)\n", len(applied))
 		}
 	case "validate":
-		cfgs, err := loadConfigsWithFuncs(confPath, validateFuncs())
+		cfgs, err := loadConfigsWithFuncs(confPath, validateFuncs(), true)
 		check(err)
 		check(runValidate(cfgs))
 	case "run":
@@ -726,7 +726,7 @@ type expandedFile struct {
 	data []byte
 }
 
-func expandFiles(pattern string, funcs template.FuncMap) ([]expandedFile, error) {
+func expandFiles(pattern string, funcs template.FuncMap, jsonnetOffline bool) ([]expandedFile, error) {
 	paths, err := filepath.Glob(pattern)
 	if err != nil {
 		return nil, err
@@ -749,7 +749,7 @@ func expandFiles(pattern string, funcs template.FuncMap) ([]expandedFile, error)
 			// .jsonnet files run through go-jsonnet directly. Skipping
 			// text/template avoids surprising double substitution; jsonnet
 			// has its own std.extVar / std.env machinery.
-			exp, err = evalJsonnet(p, raw)
+			exp, err = evalJsonnet(p, raw, jsonnetOffline)
 		} else {
 			exp, err = expandTemplate(raw, funcs)
 		}
@@ -773,21 +773,35 @@ func isJsonnet(path string) bool {
 // kind of config in either format:
 //
 //	std.native("env")(name, default)    // env or default
-//	std.native("must_env")(name)         // env or error
-//	std.native("ssm")(name)              // SSM Parameter Store, decrypted
-//	std.native("tfstate")(resource)      // tfstate lookup (EBSCHEDULE_TFSTATE_URL)
-//	std.native("tfstatef")(fmt, args...) // tfstate sprintf-style helper
+//	std.native("must_env")(name)         // env or error (offline: <env:NAME> placeholder under validate)
+//	std.native("ssm")(name)              // SSM Parameter Store, decrypted (offline: <ssm:name> placeholder)
+//	std.native("tfstate")(resource)      // tfstate lookup (offline: <tfstate:resource> placeholder)
+//	std.native("tfstatef")(fmt, args...) // tfstate sprintf-style helper (offline: <tfstate:fmt> placeholder)
 //
 // ExtVar is intentionally left empty so it stays available for explicit
 // user-supplied --ext-str values (matching ecspresso semantics).
-func evalJsonnet(path string, raw []byte) ([]byte, error) {
+//
+// `offline` controls which native set is registered: validate uses the
+// offline set so a config that references must_env / ssm / tfstate can
+// still be checked structurally without exporting env vars or having
+// AWS / state-file access. Online subcommands use the live set so
+// must_env errors loudly on missing values, ssm hits AWS, etc.
+func evalJsonnet(path string, raw []byte, offline bool) ([]byte, error) {
 	ctx := context.Background()
 	vm := jsonnet.MakeVM()
 	vm.NativeFunction(jsonnetEnvFunc())
-	vm.NativeFunction(jsonnetMustEnvFunc())
-	vm.NativeFunction(jsonnetSsmFunc(ctx))
-	for _, f := range jsonnetTfstateFuncs(ctx) {
-		vm.NativeFunction(f)
+	if offline {
+		vm.NativeFunction(jsonnetMustEnvFuncOffline())
+		vm.NativeFunction(jsonnetSsmFuncOffline())
+		for _, f := range jsonnetTfstateFuncsOffline() {
+			vm.NativeFunction(f)
+		}
+	} else {
+		vm.NativeFunction(jsonnetMustEnvFunc())
+		vm.NativeFunction(jsonnetSsmFunc(ctx))
+		for _, f := range jsonnetTfstateFuncs(ctx) {
+			vm.NativeFunction(f)
+		}
 	}
 	importer := &jsonnet.FileImporter{JPaths: []string{filepath.Dir(path)}}
 	vm.Importer(importer)
@@ -904,12 +918,75 @@ func tfstateStub(name string, params []ast.Identifier) *jsonnet.NativeFunction {
 	}
 }
 
-func loadConfigs(pattern string) ([]*Config, error) {
-	return loadConfigsWithFuncs(pattern, runtimeFuncs())
+// jsonnetMustEnvFuncOffline mirrors the validateFuncs() behavior on the
+// jsonnet side: instead of erroring when an env var is missing, return a
+// `<env:NAME>` placeholder that downstream validation accepts. Lets
+// `ebschedule validate` work on jsonnet configs that reference
+// AWS_ACCOUNT_ID etc. without the user having to export them, the same
+// way the YAML/template path already does.
+func jsonnetMustEnvFuncOffline() *jsonnet.NativeFunction {
+	return &jsonnet.NativeFunction{
+		Name:   "must_env",
+		Params: []ast.Identifier{"name"},
+		Func: func(args []any) (any, error) {
+			name, ok := args[0].(string)
+			if !ok {
+				return nil, fmt.Errorf("must_env: name must be a string")
+			}
+			if v, ok := os.LookupEnv(name); ok {
+				return v, nil
+			}
+			return "<env:" + name + ">", nil
+		},
+	}
 }
 
-func loadConfigsWithFuncs(pattern string, funcs template.FuncMap) ([]*Config, error) {
-	files, err := expandFiles(pattern, funcs)
+// jsonnetSsmFuncOffline returns `<ssm:/path>` instead of hitting AWS, so
+// validate can sanity-check structure without credentials.
+func jsonnetSsmFuncOffline() *jsonnet.NativeFunction {
+	return &jsonnet.NativeFunction{
+		Name:   "ssm",
+		Params: []ast.Identifier{"name"},
+		Func: func(args []any) (any, error) {
+			name, ok := args[0].(string)
+			if !ok || name == "" {
+				return nil, fmt.Errorf("ssm: name must be a non-empty string")
+			}
+			return "<ssm:" + name + ">", nil
+		},
+	}
+}
+
+// jsonnetTfstateFuncsOffline returns `<tfstate:resource>` placeholders
+// for both tfstate and tfstatef, matching the template path's offline
+// behavior. No EBSCHEDULE_TFSTATE_URL needed under validate.
+func jsonnetTfstateFuncsOffline() []*jsonnet.NativeFunction {
+	return []*jsonnet.NativeFunction{
+		{
+			Name:   "tfstate",
+			Params: []ast.Identifier{"name"},
+			Func: func(args []any) (any, error) {
+				name, _ := args[0].(string)
+				return "<tfstate:" + name + ">", nil
+			},
+		},
+		{
+			Name:   "tfstatef",
+			Params: []ast.Identifier{"format"},
+			Func: func(args []any) (any, error) {
+				name, _ := args[0].(string)
+				return "<tfstate:" + name + ">", nil
+			},
+		},
+	}
+}
+
+func loadConfigs(pattern string) ([]*Config, error) {
+	return loadConfigsWithFuncs(pattern, runtimeFuncs(), false)
+}
+
+func loadConfigsWithFuncs(pattern string, funcs template.FuncMap, jsonnetOffline bool) ([]*Config, error) {
+	files, err := expandFiles(pattern, funcs, jsonnetOffline)
 	if err != nil {
 		return nil, err
 	}

@@ -9,7 +9,14 @@
 //   std.native('tfstate')(resource)      // tfstate lookup (EBSCHEDULE_TFSTATE_URL)
 //   std.native('tfstatef')(fmt, args...) // tfstate sprintf-style helper
 //
-//   AWS_ACCOUNT_ID=123 ebschedule -conf examples/11-jsonnet/conf.jsonnet validate
+// Under `validate`, must_env / ssm / tfstate fall back to placeholders
+// (`<env:NAME>` / `<ssm:/path>` / `<tfstate:resource>`) so the example
+// validates offline without any env or AWS access:
+//
+//   ebschedule -conf examples/11-jsonnet/conf.jsonnet validate
+//
+// For apply / diff, set the env vars (or rely on STS auto-detect for
+// AWS_ACCOUNT_ID).
 
 local account = std.native('must_env')('AWS_ACCOUNT_ID');
 local region = std.native('env')('AWS_REGION', 'ap-northeast-1');

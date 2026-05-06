@@ -26,7 +26,7 @@ func writeTempYAML(t *testing.T, body string) string {
 
 func TestExpandFiles_MissingFileSentinelError(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "does-not-exist.yaml")
-	_, err := expandFiles(missing, runtimeFuncs())
+	_, err := expandFiles(missing, runtimeFuncs(), false)
 	if err == nil {
 		t.Fatal("expected error for missing file")
 	}
@@ -38,7 +38,7 @@ func TestExpandFiles_MissingFileSentinelError(t *testing.T) {
 func TestExpandFiles_TemplateErrorIsNotMissingSentinel(t *testing.T) {
 	// A parse error must NOT match errNoConfigFiles, so runDump won't swallow it.
 	p := writeTempYAML(t, `x: {{ env \"X\" }}`)
-	_, err := expandFiles(p, runtimeFuncs())
+	_, err := expandFiles(p, runtimeFuncs(), false)
 	if err == nil {
 		t.Fatal("expected template parse error")
 	}
@@ -958,6 +958,83 @@ func TestJsonnetConfigLoad(t *testing.T) {
 		_, err := loadConfigs(p)
 		if err == nil || !strings.Contains(err.Error(), "EBS_DEFINITELY_UNSET") {
 			t.Errorf("expected must_env error, got %v", err)
+		}
+	})
+
+	t.Run("must_env returns <env:NAME> placeholder under validate (offline)", func(t *testing.T) {
+		dir := t.TempDir()
+		p := filepath.Join(dir, "conf.jsonnet")
+		// Reference an env var that's intentionally unset. The runtime path
+		// would error here; the offline path should swap in a placeholder so
+		// `ebschedule validate` works without exporting AWS_ACCOUNT_ID etc.
+		body := `local acct = std.native("must_env")("EBS_VALIDATE_OFFLINE_UNSET");
+{
+  region: "ap-northeast-1",
+  trackingId: "ofl",
+  rules: [{
+    name: "x",
+    scheduleExpression: "rate(1 hour)",
+    targets: [{
+      id: "lambda",
+      arn: "arn:aws:lambda:ap-northeast-1:" + acct + ":function:f",
+    }],
+  }],
+}
+`
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_ = os.Unsetenv("EBS_VALIDATE_OFFLINE_UNSET")
+		cfgs, err := loadConfigsWithFuncs(p, validateFuncs(), true)
+		if err != nil {
+			t.Fatalf("offline jsonnet load should not fail: %v", err)
+		}
+		// Placeholder must end up embedded in the synthesized ARN.
+		if got := cfgs[0].Rules[0].Targets[0].Arn; !strings.Contains(got, "<env:EBS_VALIDATE_OFFLINE_UNSET>") {
+			t.Errorf("expected placeholder in arn, got %q", got)
+		}
+	})
+
+	t.Run("ssm returns <ssm:name> placeholder under validate (offline)", func(t *testing.T) {
+		dir := t.TempDir()
+		p := filepath.Join(dir, "conf.jsonnet")
+		body := `{
+  region: std.native("ssm")("/ebs/test/region"),
+  rules: [],
+}
+`
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfgs, err := loadConfigsWithFuncs(p, validateFuncs(), true)
+		if err != nil {
+			t.Fatalf("offline ssm jsonnet load should not fail: %v", err)
+		}
+		if cfgs[0].Region != "<ssm:/ebs/test/region>" {
+			t.Errorf("expected ssm placeholder, got %q", cfgs[0].Region)
+		}
+	})
+
+	t.Run("tfstate returns <tfstate:resource> placeholder under validate (offline)", func(t *testing.T) {
+		dir := t.TempDir()
+		p := filepath.Join(dir, "conf.jsonnet")
+		body := `{
+  region: std.native("tfstate")("module.x.aws_region"),
+  rules: [],
+}
+`
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		// EBSCHEDULE_TFSTATE_URL intentionally unset; offline path should NOT
+		// emit the "set EBSCHEDULE_TFSTATE_URL" stub, just a placeholder.
+		_ = os.Unsetenv(envTfstateURL)
+		cfgs, err := loadConfigsWithFuncs(p, validateFuncs(), true)
+		if err != nil {
+			t.Fatalf("offline tfstate jsonnet load should not fail: %v", err)
+		}
+		if cfgs[0].Region != "<tfstate:module.x.aws_region>" {
+			t.Errorf("expected tfstate placeholder, got %q", cfgs[0].Region)
 		}
 	})
 

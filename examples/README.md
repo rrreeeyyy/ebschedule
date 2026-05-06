@@ -1,14 +1,14 @@
 # Examples
 
 Each YAML here is a self-contained config that demonstrates one capability.
-The YAML examples reference `{{ must_env "AWS_ACCOUNT_ID" }}` and pass
-`ebschedule validate` offline (under `validate`, the template `must_env`
-falls back to a `<env:AWS_ACCOUNT_ID>` placeholder that satisfies the ARN
-check). The jsonnet example uses jsonnet's `std.native('must_env')` and
-needs `AWS_ACCOUNT_ID` exported for `validate` too. For
-`apply` / `diff` / `dump` / `run`, ebschedule auto-fills `AWS_ACCOUNT_ID`
-from `sts:GetCallerIdentity` if the env var is unset, so you don't need to
-export it explicitly when running against the calling account.
+The examples reference `{{ must_env "AWS_ACCOUNT_ID" }}` (or jsonnet's
+`std.native('must_env')`) and pass `ebschedule validate` offline — under
+`validate`, both paths fall back to a `<env:AWS_ACCOUNT_ID>` placeholder
+that satisfies the ARN check, so no env vars or AWS credentials are
+required for the structural pass. For `apply` / `diff` / `dump` / `run`,
+ebschedule auto-fills `AWS_ACCOUNT_ID` from `sts:GetCallerIdentity` if
+the env var is unset, so you don't need to export it explicitly when
+running against the calling account.
 
 ```sh
 # Walk through any example without hitting AWS:
