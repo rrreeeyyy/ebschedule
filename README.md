@@ -222,6 +222,53 @@ directly, so don't glob include them in `-conf '...*.yaml'` patterns.
 
 See [examples/09-base-file/](./examples/09-base-file).
 
+## Jsonnet
+
+Files ending in `.jsonnet` or `.libsonnet` are evaluated with
+[google/go-jsonnet](https://github.com/google/go-jsonnet) before the
+result is parsed as Config. Useful when the config grows expressions,
+list comprehensions, or shared snippets across stages.
+
+```jsonnet
+local account = std.native('must_env')('AWS_ACCOUNT_ID');
+local nightly(name, td) = {
+  name: name,
+  scheduleExpression: 'cron(0 18 * * ? *)',
+  state: 'ENABLED',
+  targets: [{
+    id: 'ecs',
+    arn: 'arn:aws:ecs:ap-northeast-1:%s:cluster/c' % [account],
+    roleArn: 'arn:aws:iam::%s:role/ecsEventsRole' % [account],
+    ecsParameters: {
+      taskDefinitionArn: 'arn:aws:ecs:ap-northeast-1:%s:task-definition/%s' % [account, td],
+      launchType: 'FARGATE',
+    },
+  }],
+};
+
+{
+  region: 'ap-northeast-1',
+  trackingId: 'my-app',
+  rules: [nightly('etl', 'etl'), nightly('rollup', 'rollup')],
+}
+```
+
+Native funcs (matching kayac/ecspresso's convention):
+
+- `std.native('env')(name, default)` — env var or default
+- `std.native('must_env')(name)` — env var, errors if unset
+
+`std.extVar` is left for explicit user-supplied values (no automatic
+process-env dump, so the jsonnet sandbox doesn't see anything you
+didn't ask for). Local imports (`import './lib.libsonnet'`) resolve
+relative to the file.
+
+Text/template (`env` / `must_env` / `ssm` / `tfstate`) is **not**
+applied to jsonnet input — jsonnet has its own machinery, and mixing
+both invites confusion.
+
+See [examples/11-jsonnet/](./examples/11-jsonnet).
+
 ## Strict YAML
 
 Unknown fields fail with a line-numbered error rather than being
