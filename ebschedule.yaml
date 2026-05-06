@@ -30,8 +30,10 @@ rules:
   # event pattern -> Step Functions
   - name: my-app-on-upload
     eventPattern:
-      source: [aws.s3]
-      detail-type: [Object Created]
+      source:
+        - aws.s3
+      detail-type:
+        - Object Created
     targets:
       - id: sfn
         arn: arn:aws:states:ap-northeast-1:{{ must_env "AWS_ACCOUNT_ID" }}:stateMachine:ProcessUpload

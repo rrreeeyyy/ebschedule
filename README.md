@@ -156,8 +156,10 @@ side. ebschedule accepts either form in YAML:
 ```yaml
 # structured (recommended; readable, no escaping)
 eventPattern:
-  source: [aws.s3]
-  detail-type: [Object Created]
+  source:
+    - aws.s3
+  detail-type:
+    - Object Created
 
 # legacy raw-JSON-string (still supported)
 eventPattern: '{"source":["aws.s3"],"detail-type":["Object Created"]}'
