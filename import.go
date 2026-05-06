@@ -41,7 +41,16 @@ type ecsTarget struct {
 	Role                     string                            `yaml:"role,omitempty"`
 	NetworkConfiguration     *ecsNetworkConfig                 `yaml:"networkConfiguration,omitempty"`
 	ContainerOverrides       []ecsContainerOverride            `yaml:"containerOverrides,omitempty"`
+	TaskOverride             *ecsTaskOverride                  `yaml:"taskOverride,omitempty"`
 	CapacityProviderStrategy []ecsCapacityProviderStrategyItem `yaml:"capacityProviderStrategy,omitempty"`
+}
+
+// ecsTaskOverride mirrors ecschedule's task-level cpu/memory override.
+// AWS expects strings here (vCPU shorthand like "0.5" or unit-stripped
+// MiB like "1024"), so keep them as strings rather than int.
+type ecsTaskOverride struct {
+	Cpu    string `yaml:"cpu,omitempty"`
+	Memory string `yaml:"memory,omitempty"`
 }
 
 // ecsCapacityProviderStrategyItem mirrors ecschedule's flat YAML shape.
@@ -210,8 +219,8 @@ func convertEcschedule(src *ecsConfig, account, trackingID string) *Config {
 		}
 		target.EcsParameters = ep
 
-		if len(r.Target.ContainerOverrides) > 0 {
-			target.Input = jsonField(buildContainerOverridesInput(r.Target.ContainerOverrides))
+		if len(r.Target.ContainerOverrides) > 0 || r.Target.TaskOverride != nil {
+			target.Input = jsonField(buildContainerOverridesInput(r.Target.ContainerOverrides, r.Target.TaskOverride))
 		}
 
 		rule.Targets = []*Target{target}
@@ -241,8 +250,11 @@ func resolveTaskDefArn(td, region, account string) string {
 }
 
 // buildContainerOverridesInput emits the JSON expected by EventBridge's
-// `Input` field for an ECS RunTask target.
-func buildContainerOverridesInput(overrides []ecsContainerOverride) string {
+// `Input` field for an ECS RunTask target. Both containerOverrides and
+// taskOverride live at the top level of the JSON (not nested under
+// `taskOverride`) — that's the shape ecschedule emits and the one the
+// EventBridge → ECS RunTask integration expects.
+func buildContainerOverridesInput(overrides []ecsContainerOverride, taskOverride *ecsTaskOverride) string {
 	type envKV struct {
 		Name  string `json:"name"`
 		Value string `json:"value"`
@@ -255,8 +267,13 @@ func buildContainerOverridesInput(overrides []ecsContainerOverride) string {
 		Memory            *int32   `json:"memory,omitempty"`
 		MemoryReservation *int32   `json:"memoryReservation,omitempty"`
 	}
+	type taskOverrideJSON struct {
+		Cpu    string `json:"cpu,omitempty"`
+		Memory string `json:"memory,omitempty"`
+	}
 	type wrapper struct {
-		ContainerOverrides []containerOverride `json:"containerOverrides"`
+		ContainerOverrides []containerOverride `json:"containerOverrides,omitempty"`
+		TaskOverride       *taskOverrideJSON   `json:"taskOverride,omitempty"`
 	}
 
 	cs := make([]containerOverride, 0, len(overrides))
@@ -273,11 +290,15 @@ func buildContainerOverridesInput(overrides []ecsContainerOverride) string {
 		}
 		cs = append(cs, co)
 	}
+	w := wrapper{ContainerOverrides: cs}
+	if taskOverride != nil && (taskOverride.Cpu != "" || taskOverride.Memory != "") {
+		w.TaskOverride = &taskOverrideJSON{Cpu: taskOverride.Cpu, Memory: taskOverride.Memory}
+	}
 	// json.Marshal cannot fail on a struct made of strings, slices, and
 	// pointer-to-int — every type here implements json.Marshaler-equivalent
 	// behavior trivially. Discard the err return to keep the call site
 	// flat; if a future field addition breaks this assumption, the next
 	// `validate` run on the converter's output will surface invalid JSON.
-	b, _ := json.Marshal(wrapper{cs}) //nolint:errcheck
+	b, _ := json.Marshal(w) //nolint:errcheck
 	return string(b)
 }

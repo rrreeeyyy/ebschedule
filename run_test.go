@@ -412,6 +412,113 @@ func TestFindRule(t *testing.T) {
 	}
 }
 
+func TestRunRuleECSAppliesContainerOverridesFromInput(t *testing.T) {
+	cli, ecsCli, _, _ := newFakeRunClients()
+	// The exact JSON shape import-ecschedule emits.
+	input := `{"containerOverrides":[{"name":"app","command":["migrate"],"environment":[{"name":"DEBUG","value":"1"}]}],"taskOverride":{"cpu":"512","memory":"1024"}}`
+	rule := &Rule{
+		Name: "etl",
+		Targets: []*Target{{
+			ID:    "ecs",
+			Arn:   "arn:aws:ecs:ap-northeast-1:111111111111:cluster/example",
+			Input: jsonField(input),
+			EcsParameters: &RuleEcsParameters{
+				TaskDefinitionArn: "arn:aws:ecs:ap-northeast-1:111111111111:task-definition/etl:5",
+			},
+		}},
+	}
+	if err := runRule(context.Background(), &bytes.Buffer{}, cli, rule, false); err != nil {
+		t.Fatalf("runRule: %v", err)
+	}
+	in := ecsCli.calls[0]
+	if in.Overrides == nil {
+		t.Fatal("expected RunTask.Overrides to be set from target.Input")
+	}
+	if aws.ToString(in.Overrides.Cpu) != "512" || aws.ToString(in.Overrides.Memory) != "1024" {
+		t.Errorf("taskOverride mismatch: cpu=%s memory=%s",
+			aws.ToString(in.Overrides.Cpu), aws.ToString(in.Overrides.Memory))
+	}
+	if len(in.Overrides.ContainerOverrides) != 1 {
+		t.Fatalf("expected 1 ContainerOverride, got %d", len(in.Overrides.ContainerOverrides))
+	}
+	co := in.Overrides.ContainerOverrides[0]
+	if aws.ToString(co.Name) != "app" {
+		t.Errorf("override name: %s", aws.ToString(co.Name))
+	}
+	if len(co.Command) != 1 || co.Command[0] != "migrate" {
+		t.Errorf("command: %v", co.Command)
+	}
+	if len(co.Environment) != 1 || aws.ToString(co.Environment[0].Name) != "DEBUG" {
+		t.Errorf("env: %+v", co.Environment)
+	}
+}
+
+func TestRunRuleECSEmptyInputLeavesOverridesUnset(t *testing.T) {
+	cli, ecsCli, _, _ := newFakeRunClients()
+	rule := &Rule{
+		Name: "etl",
+		Targets: []*Target{{
+			Arn: "arn:aws:ecs:ap-northeast-1:111111111111:cluster/example",
+			EcsParameters: &RuleEcsParameters{
+				TaskDefinitionArn: "arn:aws:ecs:ap-northeast-1:111111111111:task-definition/etl:5",
+			},
+		}},
+	}
+	if err := runRule(context.Background(), &bytes.Buffer{}, cli, rule, false); err != nil {
+		t.Fatalf("runRule: %v", err)
+	}
+	if ecsCli.calls[0].Overrides != nil {
+		t.Errorf("expected Overrides to stay nil with empty input, got %+v", ecsCli.calls[0].Overrides)
+	}
+}
+
+func TestParseECSOverrides(t *testing.T) {
+	cases := []struct {
+		name        string
+		in          string
+		wantNil     bool
+		wantCpu     string
+		wantCount   int
+		wantContain string
+	}{
+		{name: "empty returns nil", in: "", wantNil: true},
+		{name: "container only", in: `{"containerOverrides":[{"name":"a"}]}`, wantCount: 1},
+		{name: "task only", in: `{"taskOverride":{"cpu":"256"}}`, wantCpu: "256"},
+		{name: "both", in: `{"containerOverrides":[{"name":"a"},{"name":"b"}],"taskOverride":{"cpu":"1024","memory":"2048"}}`, wantCount: 2, wantCpu: "1024"},
+		{name: "extra keys tolerated", in: `{"foo":"bar","containerOverrides":[{"name":"x"}]}`, wantCount: 1},
+		{name: "object without overrides returns nil", in: `{"foo":"bar"}`, wantNil: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseECSOverrides(jsonField(tc.in))
+			if err != nil {
+				t.Fatalf("err: %v", err)
+			}
+			if tc.wantNil {
+				if got != nil {
+					t.Fatalf("expected nil, got %+v", got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatal("expected non-nil")
+			}
+			if len(got.ContainerOverrides) != tc.wantCount {
+				t.Errorf("count: want %d, got %d", tc.wantCount, len(got.ContainerOverrides))
+			}
+			if tc.wantCpu != "" && aws.ToString(got.Cpu) != tc.wantCpu {
+				t.Errorf("cpu: want %s, got %s", tc.wantCpu, aws.ToString(got.Cpu))
+			}
+		})
+	}
+}
+
+func TestParseECSOverridesInvalidJSONErrors(t *testing.T) {
+	if _, err := parseECSOverrides(jsonField("not-json")); err == nil {
+		t.Fatal("expected error for invalid JSON")
+	}
+}
+
 func TestPayloadFromInput(t *testing.T) {
 	cases := []struct {
 		in   jsonField
