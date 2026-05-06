@@ -1,1 +1,7 @@
 /ebschedule
+/dist/
+*.test
+*.out
+coverage.out
+.envrc
+.DS_Store
