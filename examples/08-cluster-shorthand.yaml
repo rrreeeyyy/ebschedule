@@ -1,0 +1,52 @@
+# 08-cluster-shorthand: ecschedule-style ECS RunTask shorthand.
+#
+# Top-level `region:`, `account:`, and `cluster:` lift the per-target ARN
+# boilerplate. Inside an ECS RunTask target you can write:
+#
+#     target.arn         omitted    -> arn:aws:ecs:{region}:{account}:cluster/{cluster}
+#     target.roleArn     short name -> arn:aws:iam::{account}:role/{name}
+#     ecsParameters.taskDefinitionArn   short name[:rev] -> arn:aws:ecs:{region}:{account}:task-definition/{name}
+#
+# Anything starting with `arn:` is left alone; mix and match as you please.
+# Useful for migrating off ecschedule with minimal yaml churn.
+#
+# `account:` defaults to AWS_ACCOUNT_ID env when omitted. Templating with
+# `{{ must_env "AWS_ACCOUNT_ID" }}` still works the old way.
+
+region: ap-northeast-1
+account: '{{ must_env "AWS_ACCOUNT_ID" }}'
+cluster: my-cluster
+trackingId: examples-08
+tags:
+  Owner: examples
+
+rules:
+  - name: example-shorthand-nightly
+    description: Daily ETL with the ecschedule-style shorthand
+    scheduleExpression: cron(0 18 * * ? *)
+    state: ENABLED
+    targets:
+      - id: ecs
+        # `arn:` omitted -> defaults to cluster ARN built from cfg.cluster
+        roleArn: ecsEventsRole               # short -> iam role ARN
+        ecsParameters:
+          taskDefinitionArn: my-batch        # short -> task-definition ARN
+          launchType: FARGATE
+          subnets: [subnet-aaa, subnet-bbb]
+          securityGroups: [sg-egress]
+          assignPublicIp: DISABLED
+
+  - name: example-shorthand-with-overrides
+    scheduleExpression: rate(2 hours)
+    state: ENABLED
+    targets:
+      - id: ecs
+        # explicit cluster ARN takes precedence over cfg.cluster shortcut
+        arn: arn:aws:ecs:ap-northeast-1:{{ must_env "AWS_ACCOUNT_ID" }}:cluster/explicit-cluster
+        roleArn: ecsEventsRole
+        ecsParameters:
+          taskDefinitionArn: special-task:5
+          launchType: FARGATE
+          subnets: [subnet-aaa]
+          securityGroups: [sg-egress]
+          assignPublicIp: DISABLED

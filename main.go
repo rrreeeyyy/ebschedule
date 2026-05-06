@@ -73,10 +73,26 @@ type Config struct {
 	Tags         map[string]string `yaml:"tags,omitempty"` // applied to every Rule and to the schedule-group (Scheduler tags only at group level)
 	EventBusName string            `yaml:"eventBusName,omitempty"`
 	GroupName    string            `yaml:"groupName,omitempty"`
-	Rules        []*Rule           `yaml:"rules,omitempty"`
-	Schedules    []*Schedule       `yaml:"schedules,omitempty"`
+	// Account / Cluster enable ecschedule-style ARN shorthand. When set,
+	// short names in target.arn (cluster), ecsParameters.taskDefinitionArn,
+	// and target.roleArn are expanded to full ARNs at load time so the rest
+	// of the pipeline only sees canonical ARNs.
+	Account   string      `yaml:"account,omitempty"`
+	Cluster   string      `yaml:"cluster,omitempty"`
+	Rules     []*Rule     `yaml:"rules,omitempty"`
+	Schedules []*Schedule `yaml:"schedules,omitempty"`
 
 	sourcePath string `yaml:"-"`
+}
+
+// account returns the configured account ID, falling back to AWS_ACCOUNT_ID
+// in the environment. Returns "" if neither is set; callers that need the
+// value for shorthand expansion should error in that case.
+func (c *Config) account() string {
+	if c.Account != "" {
+		return c.Account
+	}
+	return os.Getenv("AWS_ACCOUNT_ID")
 }
 
 func (c *Config) bus() string {
@@ -638,9 +654,110 @@ func loadConfigsWithFuncs(pattern string, funcs template.FuncMap) ([]*Config, er
 		if c.Rules == nil && c.Schedules == nil {
 			return nil, fmt.Errorf("%s: neither rules: nor schedules: present", f.path)
 		}
+		if err := expandShortcuts(&c); err != nil {
+			return nil, fmt.Errorf("%s: %w", f.path, err)
+		}
 		out = append(out, &c)
 	}
 	return out, nil
+}
+
+// expandShortcuts rewrites ecschedule-style short names into full ARNs so
+// downstream code only deals with canonical values:
+//
+//   - target.arn (when the target carries ecsParameters): bare cluster
+//     name -> arn:aws:ecs:{region}:{account}:cluster/{name}
+//   - ecsParameters.taskDefinitionArn: bare family[:rev] -> full ARN
+//   - target.roleArn: bare role name -> arn:aws:iam::{account}:role/{name}
+//
+// Anything already starting with "arn:" is left alone. If shorthand is used
+// but Region or Account aren't known, return an error pointing at the
+// missing piece so the user gets a clear message rather than a malformed
+// ARN reaching AWS.
+func expandShortcuts(c *Config) error {
+	region := c.Region
+	account := c.account()
+
+	expandRoleArn := func(role string) (string, error) {
+		if role == "" || strings.HasPrefix(role, "arn:") {
+			return role, nil
+		}
+		if account == "" {
+			return "", fmt.Errorf("roleArn shorthand %q requires top-level account: or AWS_ACCOUNT_ID", role)
+		}
+		return fmt.Sprintf("arn:aws:iam::%s:role/%s", account, role), nil
+	}
+
+	expandClusterArn := func(name string) (string, error) {
+		if name == "" || strings.HasPrefix(name, "arn:") {
+			return name, nil
+		}
+		if region == "" || account == "" {
+			return "", fmt.Errorf("ECS target.arn shorthand %q requires top-level region: + account:", name)
+		}
+		return fmt.Sprintf("arn:aws:ecs:%s:%s:cluster/%s", region, account, name), nil
+	}
+
+	expandTaskDefArn := func(td string) (string, error) {
+		if td == "" || strings.HasPrefix(td, "arn:") {
+			return td, nil
+		}
+		if region == "" || account == "" {
+			return "", fmt.Errorf("ecsParameters.taskDefinitionArn shorthand %q requires top-level region: + account:", td)
+		}
+		return fmt.Sprintf("arn:aws:ecs:%s:%s:task-definition/%s", region, account, td), nil
+	}
+
+	for _, r := range c.Rules {
+		for _, t := range r.Targets {
+			ra, err := expandRoleArn(t.RoleArn)
+			if err != nil {
+				return err
+			}
+			t.RoleArn = ra
+			if t.EcsParameters != nil {
+				if t.Arn == "" && c.Cluster != "" {
+					t.Arn = c.Cluster
+				}
+				ca, err := expandClusterArn(t.Arn)
+				if err != nil {
+					return err
+				}
+				t.Arn = ca
+				td, err := expandTaskDefArn(t.EcsParameters.TaskDefinitionArn)
+				if err != nil {
+					return err
+				}
+				t.EcsParameters.TaskDefinitionArn = td
+			}
+		}
+	}
+	for _, s := range c.Schedules {
+		if s.Target == nil {
+			continue
+		}
+		ra, err := expandRoleArn(s.Target.RoleArn)
+		if err != nil {
+			return err
+		}
+		s.Target.RoleArn = ra
+		if s.Target.EcsParameters != nil {
+			if s.Target.Arn == "" && c.Cluster != "" {
+				s.Target.Arn = c.Cluster
+			}
+			ca, err := expandClusterArn(s.Target.Arn)
+			if err != nil {
+				return err
+			}
+			s.Target.Arn = ca
+			td, err := expandTaskDefArn(s.Target.EcsParameters.TaskDefinitionArn)
+			if err != nil {
+				return err
+			}
+			s.Target.EcsParameters.TaskDefinitionArn = td
+		}
+	}
+	return nil
 }
 
 // runtimeFuncs returns the FuncMap used by dump/diff/apply. Hits AWS for SSM
