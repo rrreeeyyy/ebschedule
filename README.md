@@ -21,6 +21,30 @@ Or build from source:
 go build -o ebschedule .
 ```
 
+### GitHub Actions
+
+A composite action installs ebschedule from the published release for
+the runner's OS/arch and adds it to `PATH`:
+
+```yaml
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rrreeeyyy/ebschedule@v1
+        with:
+          version: v0.1.0          # or "latest" (default)
+      - run: ebschedule -conf config/ -prune apply
+        env:
+          # Account ID isn't a secret (it's visible in every IAM ARN);
+          # store it as a workflow / repo / org variable, not a secret.
+          AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+```
+
+Inputs: `version` (release tag or `latest`), `github-token` (defaults
+to `github.token`), `install-dir` (defaults to `/usr/local/bin`).
+
 ## Quick start
 
 ```sh
