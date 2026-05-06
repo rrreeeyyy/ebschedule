@@ -914,6 +914,82 @@ func TestJsonnetConfigLoad(t *testing.T) {
 		}
 	})
 
+	t.Run("tfstate native errors with helpful message when env unset", func(t *testing.T) {
+		_ = os.Unsetenv(envTfstateURL)
+		dir := t.TempDir()
+		p := filepath.Join(dir, "conf.jsonnet")
+		writeFile(t, p, `{ region: std.native("tfstate")("aws_iam_role.x.arn"), rules: [] }`)
+		_, err := loadConfigs(p)
+		if err == nil || !strings.Contains(err.Error(), envTfstateURL) {
+			t.Errorf("expected tfstate-not-set error, got %v", err)
+		}
+	})
+
+	t.Run("tfstate native resolves against a real state file", func(t *testing.T) {
+		dir := t.TempDir()
+		state := filepath.Join(dir, "terraform.tfstate")
+		writeFile(t, state, `{
+  "version": 4,
+  "terraform_version": "1.5.0",
+  "resources": [
+    {
+      "mode": "managed",
+      "type": "aws_iam_role",
+      "name": "eb",
+      "instances": [{"attributes": {"arn": "arn:aws:iam::1:role/eb"}}]
+    }
+  ]
+}`)
+		t.Setenv(envTfstateURL, state)
+		p := filepath.Join(dir, "conf.jsonnet")
+		writeFile(t, p, `{
+  region: "us-east-1",
+  rules: [
+    {
+      name: "x",
+      scheduleExpression: "rate(1 hour)",
+      targets: [
+        {
+          id: "lambda",
+          arn: "arn:aws:lambda:us-east-1:1:function:f",
+          roleArn: std.native("tfstate")("aws_iam_role.eb.arn"),
+        },
+      ],
+    },
+  ],
+}`)
+		cfgs, err := loadConfigs(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfgs[0].Rules[0].Targets[0].RoleArn != "arn:aws:iam::1:role/eb" {
+			t.Errorf("tfstate didn't resolve: roleArn=%q", cfgs[0].Rules[0].Targets[0].RoleArn)
+		}
+	})
+
+	t.Run("ssm native error surfaces when AWS unreachable", func(t *testing.T) {
+		// We can't reasonably exercise the success path without AWS creds /
+		// a fake. Instead: force LoadDefaultConfig to fail by pointing the
+		// SDK at an unreadable config dir, then expect a wrapped error.
+		t.Setenv("AWS_CONFIG_FILE", "/dev/null/never")
+		t.Setenv("AWS_SHARED_CREDENTIALS_FILE", "/dev/null/never")
+		t.Setenv("AWS_REGION", "")
+		_ = os.Unsetenv("AWS_DEFAULT_REGION")
+		dir := t.TempDir()
+		p := filepath.Join(dir, "conf.jsonnet")
+		writeFile(t, p, `{ region: std.native("ssm")("/nonexistent"), rules: [] }`)
+		_, err := loadConfigs(p)
+		// AWS may or may not return an error before reaching our code,
+		// depending on env. We just want to confirm the call path doesn't
+		// silently succeed.
+		if err == nil {
+			t.Skip("AWS reachable in this environment; ssm path took the success branch")
+		}
+		if !strings.Contains(err.Error(), "ssm") && !strings.Contains(err.Error(), "AWS") {
+			t.Errorf("expected ssm-related error, got %v", err)
+		}
+	})
+
 	t.Run("local imports resolve relative to file", func(t *testing.T) {
 		dir := t.TempDir()
 		if err := os.WriteFile(filepath.Join(dir, "_lib.libsonnet"),

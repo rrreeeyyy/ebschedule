@@ -278,10 +278,15 @@ local nightly(name, td) = {
 }
 ```
 
-Native funcs (matching kayac/ecspresso's convention):
+Native funcs parallel the YAML+template pipeline so the same kind of
+config can be written in either format:
 
-- `std.native('env')(name, default)` — env var or default
-- `std.native('must_env')(name)` — env var, errors if unset
+| Native | Equivalent in YAML |
+| --- | --- |
+| `std.native('env')(name, default)` | `{{ env "NAME" }}` |
+| `std.native('must_env')(name)` | `{{ must_env "NAME" }}` |
+| `std.native('ssm')(name)` | `{{ ssm "/path" }}` |
+| `std.native('tfstate')(resource)` | `{{ tfstate "type.name.attr" }}` |
 
 `std.extVar` is left for explicit user-supplied values (no automatic
 process-env dump, so the jsonnet sandbox doesn't see anything you
@@ -289,8 +294,8 @@ didn't ask for). Local imports (`import './lib.libsonnet'`) resolve
 relative to the file.
 
 Text/template (`env` / `must_env` / `ssm` / `tfstate`) is **not**
-applied to jsonnet input — jsonnet has its own machinery, and mixing
-both invites confusion.
+applied to jsonnet input — jsonnet has its own machinery via the
+natives above, and mixing both would invite confusion.
 
 See [examples/11-jsonnet/](./examples/11-jsonnet).
 
