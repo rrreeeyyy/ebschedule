@@ -10,17 +10,24 @@ builds:
     binary: ebschedule
     env:
       - CGO_ENABLED=0
-    goos: [linux, darwin]
+    goos: [linux, darwin, windows]
     goarch: [amd64, arm64]
     flags:
       - -trimpath
     ldflags:
       - -s -w
       - -X main.version={{ .Version }}
+    # Reproducible builds: stamp binaries with the commit timestamp so
+    # rebuilds of the same tag are byte-identical.
+    mod_timestamp: "{{ .CommitTimestamp }}"
 
 archives:
   - id: ebschedule
+    # Use zip for windows users; tar.gz everywhere else.
     formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     files:
       - README.md
@@ -28,6 +35,9 @@ archives:
 
 checksum:
   name_template: 'checksums.txt'
+
+# Print binary size deltas in the build log; useful in CI runs.
+report_sizes: true
 
 snapshot:
   version_template: "{{ incpatch .Version }}-snapshot+{{ .ShortCommit }}"
@@ -46,5 +56,7 @@ changelog:
       - '^docs:'
       - '^test:'
       - '^ci:'
-      - '^chore:'
+      # Drop boring chores but keep dependency bumps in the changelog
+      # (they may carry CVE fixes or feature unlocks).
+      - '^chore(?!\(deps\)):'
       - 'Merge pull request'

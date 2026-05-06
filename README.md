@@ -44,22 +44,26 @@ ebschedule -conf ebschedule.yaml apply
 ebschedule -conf ebschedule.yaml -prune apply
 
 # multi-file (e.g. one per service / team)
-ebschedule -conf 'config/*.yaml' apply -prune
+ebschedule -conf 'config/*.yaml' -prune apply
 ```
+
+Note: flags must precede the subcommand (Go's `flag` stops parsing at
+the first non-flag arg). `-prune apply` works; `apply -prune` silently
+drops the flag.
 
 See [`ebschedule.yaml`](./ebschedule.yaml) for an example covering both
 Rules and Schedules.
 
 ## Subcommands
 
-| Command              | Reads AWS | Mutates AWS | Notes                                              |
-| -------------------- | :-------: | :---------: | -------------------------------------------------- |
-| `validate`           |     —     |      —      | Offline structural check; exits non-zero on errors |
-| `dump [prefix]`      |     ✓     |      —      | Emit YAML reflecting current AWS state             |
-| `diff`               |     ✓     |      —      | Unified-diff per resource, current vs desired      |
-| `apply` (`-dry-run`) |     ✓     |    `-dry-run` skips it    | Create / update                |
-| `apply -prune`       |     ✓     |      ✓      | Also delete tracked resources missing from config  |
-| `import-ecschedule`  |     —     |      —      | Convert an ecschedule YAML to ebschedule format    |
+| Command             | Reads AWS | Mutates AWS | Notes                                              |
+| ------------------- | :-------: | :---------: | -------------------------------------------------- |
+| `validate`          |     —     |      —      | Offline structural check; exits non-zero on errors |
+| `dump [prefix]`     |     ✓     |      —      | Emit YAML reflecting current AWS state             |
+| `diff`              |     ✓     |      —      | Unified-diff per resource; exits 2 on drift        |
+| `apply`             |     ✓     |      ✓      | Create / update; `-dry-run` keeps it read-only     |
+| `-prune apply`      |     ✓     |      ✓      | Apply + delete tracked resources missing from config |
+| `import-ecschedule` |     —     |      —      | Convert an ecschedule YAML to ebschedule format    |
 
 ## Config semantics: omitted vs. empty
 
@@ -93,20 +97,24 @@ shared with Terraform / CDK aren't disturbed.
 
 `-prune` is scoped via the `ebschedule-tracking-id` tag.
 
-- A `trackingId:` is **required** in YAML; without it `-prune` is rejected.
+- A `trackingId:` is **required** in YAML when using `-prune`; without it
+  prune is rejected.
 - For **Rules**: only Rules whose tag matches the configured `trackingId`
   are eligible. Resources created by other tools (Terraform, CDK, console)
   remain untouched.
-- For **Schedules**: ebschedule first checks the schedule **group** itself
-  for the tracking tag. If absent, prune is skipped with a stderr warning
-  — even if the config asks for an empty `schedules: []`. This protects
-  groups shared between ebschedule and other tools.
+- For **Schedules**: ebschedule scans every schedule-group in the account
+  whose tags include `ebschedule-tracking-id=<your-id>` and prunes
+  schedules within those groups. Foreign groups (no tracking tag, or a
+  different value) are never visited, so groups shared with other tools
+  are safe. With per-schedule `groupName:` override, removing a schedule
+  from the config also cleans up schedules left in groups the config no
+  longer references.
 
 A typical pattern:
 
 ```yaml
 trackingId: my-app   # any stable string
-groupName: my-app    # ebschedule-owned group
+groupName: my-app    # ebschedule-owned group (auto-created on first apply)
 ```
 
 ## Templating
@@ -280,7 +288,7 @@ When several teams share an account, give each team its own config file
 keeps the prune scope per-file:
 
 ```sh
-ebschedule -conf 'config/*.yaml' apply -prune
+ebschedule -conf 'config/*.yaml' -prune apply
 ```
 
 See [examples/multi-file/](./examples/multi-file) for a worked layout
