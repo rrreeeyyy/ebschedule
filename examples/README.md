@@ -23,6 +23,7 @@ AWS_PROFILE=my-sandbox AWS_ACCOUNT_ID=123456789012 \
 | [05-ecs-runtask.yaml](./05-ecs-runtask.yaml) | ECS Fargate RunTask via Rule + `containerOverrides` (the ecschedule pattern) |
 | [06-target-types.yaml](./06-target-types.yaml) | Variety pack: Kinesis, SQS FIFO, Batch, Redshift Data, SageMaker pipeline, API Destination |
 | [07-template-funcs.yaml](./07-template-funcs.yaml) | `env` / `must_env` / `ssm` template substitution |
+| [08-cluster-shorthand.yaml](./08-cluster-shorthand.yaml) | ecschedule-style top-level `cluster:` / `account:` shorthand; short names auto-expand to full ARNs |
 | [multi-file/](./multi-file/) | Glob-loaded configs: `-conf 'examples/multi-file/*.yaml'`; per-file trackingId keeps prune scoped per team |
 
 ## Bootstrapping from existing AWS

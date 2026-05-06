@@ -332,6 +332,149 @@ func TestTargetFlag_Filter(t *testing.T) {
 	})
 }
 
+func TestExpandShortcuts(t *testing.T) {
+	t.Run("full ARNs untouched", func(t *testing.T) {
+		c := &Config{
+			Rules: []*Rule{{
+				Name: "x",
+				Targets: []*Target{{
+					ID:      "lambda",
+					Arn:     "arn:aws:lambda:us-east-1:1:function:f",
+					RoleArn: "arn:aws:iam::1:role/r",
+				}},
+			}},
+		}
+		if err := expandShortcuts(c); err != nil {
+			t.Fatal(err)
+		}
+		tgt := c.Rules[0].Targets[0]
+		if tgt.Arn != "arn:aws:lambda:us-east-1:1:function:f" || tgt.RoleArn != "arn:aws:iam::1:role/r" {
+			t.Errorf("ARNs were rewritten: %+v", tgt)
+		}
+	})
+
+	t.Run("ECS target with cluster shorthand", func(t *testing.T) {
+		c := &Config{
+			Region:  "ap-northeast-1",
+			Account: "111122223333",
+			Cluster: "my-cluster",
+			Rules: []*Rule{{
+				Name: "x",
+				Targets: []*Target{{
+					ID:      "ecs",
+					RoleArn: "ecsEventsRole",
+					EcsParameters: &RuleEcsParameters{
+						TaskDefinitionArn: "my-task:42",
+					},
+				}},
+			}},
+		}
+		if err := expandShortcuts(c); err != nil {
+			t.Fatal(err)
+		}
+		tgt := c.Rules[0].Targets[0]
+		if tgt.Arn != "arn:aws:ecs:ap-northeast-1:111122223333:cluster/my-cluster" {
+			t.Errorf("cluster ARN: %q", tgt.Arn)
+		}
+		if tgt.RoleArn != "arn:aws:iam::111122223333:role/ecsEventsRole" {
+			t.Errorf("role ARN: %q", tgt.RoleArn)
+		}
+		if tgt.EcsParameters.TaskDefinitionArn != "arn:aws:ecs:ap-northeast-1:111122223333:task-definition/my-task:42" {
+			t.Errorf("task-def ARN: %q", tgt.EcsParameters.TaskDefinitionArn)
+		}
+	})
+
+	t.Run("AWS_ACCOUNT_ID env fallback", func(t *testing.T) {
+		t.Setenv("AWS_ACCOUNT_ID", "999988887777")
+		c := &Config{
+			Region:  "us-east-1",
+			Cluster: "c1",
+			Rules: []*Rule{{
+				Name: "x",
+				Targets: []*Target{{
+					ID:            "ecs",
+					RoleArn:       "ecsRole",
+					EcsParameters: &RuleEcsParameters{TaskDefinitionArn: "td"},
+				}},
+			}},
+		}
+		if err := expandShortcuts(c); err != nil {
+			t.Fatal(err)
+		}
+		if c.Rules[0].Targets[0].RoleArn != "arn:aws:iam::999988887777:role/ecsRole" {
+			t.Errorf("env fallback failed: %+v", c.Rules[0].Targets[0])
+		}
+	})
+
+	t.Run("shorthand without account errors", func(t *testing.T) {
+		t.Setenv("AWS_ACCOUNT_ID", "")
+		c := &Config{
+			Rules: []*Rule{{
+				Name: "x",
+				Targets: []*Target{{
+					ID:      "lambda",
+					Arn:     "arn:aws:lambda:us-east-1:1:function:f",
+					RoleArn: "ecsEventsRole",
+				}},
+			}},
+		}
+		err := expandShortcuts(c)
+		if err == nil || !strings.Contains(err.Error(), "account") {
+			t.Errorf("expected account-required error, got %v", err)
+		}
+	})
+
+	t.Run("Schedule target ECS shorthand", func(t *testing.T) {
+		c := &Config{
+			Region:  "ap-northeast-1",
+			Account: "111122223333",
+			Cluster: "shared",
+			Schedules: []*Schedule{{
+				Name:               "s1",
+				ScheduleExpression: "rate(1 hour)",
+				FlexibleTimeWindow: &FlexibleTimeWindow{Mode: "OFF"},
+				Target: &ScheduleTarget{
+					RoleArn: "schedRole",
+					EcsParameters: &SchedEcsParameters{
+						TaskDefinitionArn: "etl",
+					},
+				},
+			}},
+		}
+		if err := expandShortcuts(c); err != nil {
+			t.Fatal(err)
+		}
+		st := c.Schedules[0].Target
+		if st.Arn != "arn:aws:ecs:ap-northeast-1:111122223333:cluster/shared" {
+			t.Errorf("schedule cluster ARN: %q", st.Arn)
+		}
+		if st.RoleArn != "arn:aws:iam::111122223333:role/schedRole" {
+			t.Errorf("schedule role ARN: %q", st.RoleArn)
+		}
+	})
+
+	t.Run("non-ECS target with empty arn errors at validate (not here)", func(t *testing.T) {
+		// Shorthand only fires for ECS targets; for other target types,
+		// expandShortcuts leaves Target.Arn as-is and validate catches the
+		// empty-arn case downstream.
+		c := &Config{
+			Rules: []*Rule{{
+				Name: "x",
+				Targets: []*Target{{
+					ID: "lambda",
+					// No arn:, no ecsParameters -> shouldn't be rewritten.
+				}},
+			}},
+		}
+		if err := expandShortcuts(c); err != nil {
+			t.Fatal(err)
+		}
+		if c.Rules[0].Targets[0].Arn != "" {
+			t.Errorf("non-ECS empty arn was rewritten: %q", c.Rules[0].Targets[0].Arn)
+		}
+	})
+}
+
 func TestConfigBusGroup(t *testing.T) {
 	c := &Config{}
 	if got := c.bus(); got != "default" {

@@ -142,6 +142,36 @@ shows as no-op.
 
 The internal `ebschedule-tracking-id` tag is hidden from diff.
 
+## ECS RunTask shorthand (ecschedule-compatible)
+
+Top-level `region:`, `account:`, and `cluster:` enable short names inside
+ECS RunTask targets:
+
+```yaml
+region: ap-northeast-1
+account: '{{ must_env "AWS_ACCOUNT_ID" }}'
+cluster: my-cluster
+
+rules:
+  - name: nightly
+    scheduleExpression: cron(0 18 * * ? *)
+    targets:
+      - id: ecs
+        # arn: omitted -> arn:aws:ecs:{region}:{account}:cluster/{cluster}
+        roleArn: ecsEventsRole          # -> arn:aws:iam::{account}:role/ecsEventsRole
+        ecsParameters:
+          taskDefinitionArn: my-batch   # -> arn:aws:ecs:{region}:{account}:task-definition/my-batch
+          launchType: FARGATE
+```
+
+Anything already starting with `arn:` is left unchanged, so migration
+from ecschedule is incremental — flip whichever fields you want to short
+names; the rest can stay full ARN.
+
+`account:` defaults to `AWS_ACCOUNT_ID` env when omitted, so a single
+config can be reused across accounts. See
+[examples/08-cluster-shorthand.yaml](./examples/08-cluster-shorthand.yaml).
+
 ## Strict YAML
 
 Unknown fields fail with a line-numbered error rather than being
