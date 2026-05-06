@@ -437,6 +437,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, `usage:
   ebschedule [-conf FILE_OR_GLOB] [-dry-run] [-prune] [-auto-approve] [-target KIND:NAME]... <dump|diff|apply|validate> [name-prefix]
   ebschedule [-conf FILE_OR_GLOB] [-tag KEY=VALUE]... dump [name-prefix]
+  ebschedule [-conf FILE_OR_GLOB] [-dry-run] run -rule NAME
   ebschedule import-ecschedule [-in FILE] [-account NUM] [-region REGION] [-tracking-id ID]
   ebschedule -version
 
@@ -545,6 +546,8 @@ Exit codes:
 		cfgs, err := loadConfigsWithFuncs(confPath, validateFuncs())
 		check(err)
 		check(runValidate(cfgs))
+	case "run":
+		check(runRunSubcommand(ctx, out, confPath, dryRun, args[1:]))
 	case "import-ecschedule":
 		importEcschedule(args[1:])
 	default:
