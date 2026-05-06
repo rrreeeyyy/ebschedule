@@ -1,0 +1,33 @@
+# 10-tfstate: pull resource ARNs from a Terraform state file.
+#
+# When EBSCHEDULE_TFSTATE_URL is set (a local path or s3:// / http:// URL),
+# the {{ tfstate "<resource>.<attribute>" }} template func resolves to the
+# value pulled from the named tfstate. Useful for repos where Terraform
+# manages the IAM roles / Lambda functions and ebschedule wires them up.
+#
+#   export EBSCHEDULE_TFSTATE_URL=./terraform.tfstate
+#   export AWS_ACCOUNT_ID=123456789012
+#   ebschedule -conf examples/10-tfstate.yaml validate
+#   # `validate` substitutes <tfstate:...> placeholders so it runs offline;
+#   # `apply` resolves the real values.
+
+region: ap-northeast-1
+account: '{{ must_env "AWS_ACCOUNT_ID" }}'
+trackingId: examples-10
+tags:
+  Owner: examples
+
+rules:
+  - name: example-tfstate-trigger
+    description: Lambda + IAM role both come from Terraform
+    eventPattern:
+      source:
+        - aws.s3
+      detail-type:
+        - Object Created
+    state: ENABLED
+    targets:
+      - id: lambda
+        # Resolved at apply time from the configured tfstate file.
+        arn: '{{ tfstate "aws_lambda_function.processor.arn" }}'
+        roleArn: '{{ tfstate "aws_iam_role.eventbridge_invoker.arn" }}'
