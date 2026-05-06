@@ -378,11 +378,11 @@ rules:
 
 	t.Run("child wins on scalar conflict", func(t *testing.T) {
 		dir := t.TempDir()
-		os.WriteFile(filepath.Join(dir, "base.yaml"), []byte(`
+		writeFile(t, filepath.Join(dir, "base.yaml"), `
 region: us-east-1
 trackingId: parent
-`), 0o600)
-		os.WriteFile(filepath.Join(dir, "child.yaml"), []byte(`
+`)
+		writeFile(t, filepath.Join(dir, "child.yaml"), `
 baseFile: base.yaml
 region: ap-northeast-1
 trackingId: child
@@ -392,7 +392,7 @@ rules:
     targets:
       - id: t
         arn: arn:aws:lambda:us-east-1:1:function:f
-`), 0o600)
+`)
 		cfgs, err := loadConfigs(filepath.Join(dir, "child.yaml"))
 		if err != nil {
 			t.Fatal(err)
@@ -404,7 +404,7 @@ rules:
 
 	t.Run("base file with rules is rejected", func(t *testing.T) {
 		dir := t.TempDir()
-		os.WriteFile(filepath.Join(dir, "base.yaml"), []byte(`
+		writeFile(t, filepath.Join(dir, "base.yaml"), `
 region: us-east-1
 rules:
   - name: ghost
@@ -412,11 +412,11 @@ rules:
     targets:
       - id: t
         arn: arn:aws:lambda:us-east-1:1:function:f
-`), 0o600)
-		os.WriteFile(filepath.Join(dir, "child.yaml"), []byte(`
+`)
+		writeFile(t, filepath.Join(dir, "child.yaml"), `
 baseFile: base.yaml
 schedules: []
-`), 0o600)
+`)
 		_, err := loadConfigs(filepath.Join(dir, "child.yaml"))
 		if err == nil || !strings.Contains(err.Error(), "must not declare rules") {
 			t.Errorf("expected base-with-rules rejection, got %v", err)
@@ -425,13 +425,13 @@ schedules: []
 
 	t.Run("cycle detection", func(t *testing.T) {
 		dir := t.TempDir()
-		os.WriteFile(filepath.Join(dir, "a.yaml"), []byte(`
+		writeFile(t, filepath.Join(dir, "a.yaml"), `
 baseFile: b.yaml
 schedules: []
-`), 0o600)
-		os.WriteFile(filepath.Join(dir, "b.yaml"), []byte(`
+`)
+		writeFile(t, filepath.Join(dir, "b.yaml"), `
 baseFile: a.yaml
-`), 0o600)
+`)
 		_, err := loadConfigs(filepath.Join(dir, "a.yaml"))
 		if err == nil || !strings.Contains(err.Error(), "cycle") {
 			t.Errorf("expected cycle error, got %v", err)
@@ -440,18 +440,18 @@ baseFile: a.yaml
 
 	t.Run("recursive inherit (a -> b -> c)", func(t *testing.T) {
 		dir := t.TempDir()
-		os.WriteFile(filepath.Join(dir, "c.yaml"), []byte(`
+		writeFile(t, filepath.Join(dir, "c.yaml"), `
 region: ap-northeast-1
 account: "111"
-`), 0o600)
-		os.WriteFile(filepath.Join(dir, "b.yaml"), []byte(`
+`)
+		writeFile(t, filepath.Join(dir, "b.yaml"), `
 baseFile: c.yaml
 cluster: shared
-`), 0o600)
-		os.WriteFile(filepath.Join(dir, "a.yaml"), []byte(`
+`)
+		writeFile(t, filepath.Join(dir, "a.yaml"), `
 baseFile: b.yaml
 schedules: []
-`), 0o600)
+`)
 		cfgs, err := loadConfigs(filepath.Join(dir, "a.yaml"))
 		if err != nil {
 			t.Fatal(err)
@@ -461,6 +461,15 @@ schedules: []
 			t.Errorf("recursive inherit failed: %+v", c)
 		}
 	})
+}
+
+// writeFile is a small test helper that fails the test on any
+// os.WriteFile error, so the tests above can stay flat.
+func writeFile(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestExpandShortcuts(t *testing.T) {
