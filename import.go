@@ -206,11 +206,7 @@ func convertEcschedule(src *ecsConfig, account, trackingID string) *Config {
 			ep.AssignPublicIp = nc.AwsvpcConfiguration.AssignPublicIp
 		}
 		for _, c := range r.Target.CapacityProviderStrategy {
-			ep.CapacityProviderStrategy = append(ep.CapacityProviderStrategy, CapacityProviderStrategyItem{
-				CapacityProvider: c.CapacityProvider,
-				Base:             c.Base,
-				Weight:           c.Weight,
-			})
+			ep.CapacityProviderStrategy = append(ep.CapacityProviderStrategy, CapacityProviderStrategyItem(c))
 		}
 		target.EcsParameters = ep
 
