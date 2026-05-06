@@ -52,7 +52,7 @@ to `github.token`), `install-dir` (defaults to `/usr/local/bin`).
 ebschedule dump my-app- > ebschedule.yaml
 
 # bootstrap by tag (e.g. only Rules tagged Service=my-app, AND'd if multiple)
-ebschedule -conf /dev/null -tag Service=my-app -tag Env=prod dump > ebschedule.yaml
+ebschedule -tag Service=my-app -tag Env=prod dump > ebschedule.yaml
 
 # offline structural check (no AWS calls)
 ebschedule -conf ebschedule.yaml validate
@@ -392,7 +392,7 @@ shape of the output.
 
 ```sh
 # Pull every Rule tagged Service=my-app and Env=prod into a starter config:
-ebschedule -conf /dev/null \
+ebschedule \
   -tag Service=my-app \
   -tag Env=prod \
   dump > my-app.yaml
@@ -404,7 +404,10 @@ ebschedule -conf my-app.yaml diff && echo "in sync"
 ```
 
 Multiple `-tag` flags are AND-matched. Schedules dump per-group as
-before; the `-tag` filter applies to Rules only.
+before; the `-tag` filter applies to Rules only. `dump` tolerates a
+missing `ebschedule.yaml` (the default `-conf` path) — when there's
+nothing to load, it just emits a fresh YAML based on what it finds in
+AWS, so the bootstrap call doesn't need any config-shaped scaffolding.
 
 ### CI: gate PRs on drift
 
