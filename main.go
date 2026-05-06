@@ -32,6 +32,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/fujiwara/tfstate-lookup/tfstate"
 	"github.com/pmezard/go-difflib/difflib"
 	"golang.org/x/term"
@@ -498,24 +499,45 @@ Exit codes:
 		}
 		cfgs, err := loadConfigs(confPath)
 		check(err)
+		// Pre-flight runs even in -dry-run because dry-run still issues AWS
+		// reads (Describe / List for the no-op detection); failing fast on
+		// missing / expired creds beats letting an obscure mid-stream error
+		// surface several calls in.
+		if err := preflightCheck(ctx, cfgs); err != nil {
+			check(fmt.Errorf("pre-flight: %w", err))
+		}
 		if !dryRun && !autoApprove && stdinIsTTY() {
 			if !confirmApply(os.Stderr, os.Stdin) {
 				fmt.Fprintln(os.Stderr, "aborted")
 				os.Exit(exitErr)
 			}
 		}
-		for _, cfg := range cfgs {
+		applied := []string{}
+		for i, cfg := range cfgs {
 			scoped, err := targets.filter(cfg)
-			check(err)
+			if err != nil {
+				applySummary(applied, cfgs, i, err)
+				check(err)
+			}
 			if len(cfgs) > 1 {
 				fmt.Fprintf(out, "# %s\n", scoped.sourcePath)
 			}
 			if scoped.Rules != nil {
-				check(applyRules(ctx, out, scoped, dryRun, prune))
+				if err := applyRules(ctx, out, scoped, dryRun, prune); err != nil {
+					applySummary(applied, cfgs, i, err)
+					check(err)
+				}
 			}
 			if scoped.Schedules != nil {
-				check(applySchedules(ctx, out, scoped, dryRun, prune))
+				if err := applySchedules(ctx, out, scoped, dryRun, prune); err != nil {
+					applySummary(applied, cfgs, i, err)
+					check(err)
+				}
 			}
+			applied = append(applied, scoped.sourcePath)
+		}
+		if len(cfgs) > 1 {
+			fmt.Fprintf(os.Stderr, "applied %d config file(s)\n", len(applied))
 		}
 	case "validate":
 		cfgs, err := loadConfigsWithFuncs(confPath, validateFuncs())
@@ -527,6 +549,45 @@ Exit codes:
 		flag.Usage()
 		os.Exit(exitErr)
 	}
+}
+
+// preflightCheck verifies AWS credentials by calling sts:GetCallerIdentity
+// once per region present in cfgs (deduplicated). It runs before any
+// mutation so an apply doesn't get half-way then trip on expired SSO.
+// Errors here are surfaced with the AWS error wrapped so the user sees
+// the underlying cause directly.
+func preflightCheck(ctx context.Context, cfgs []*Config) error {
+	seen := map[string]bool{}
+	regions := []string{}
+	for _, c := range cfgs {
+		if seen[c.Region] {
+			continue
+		}
+		seen[c.Region] = true
+		regions = append(regions, c.Region)
+	}
+	for _, region := range regions {
+		awsCfg, err := loadAWS(ctx, region)
+		if err != nil {
+			return fmt.Errorf("AWS credentials (region=%q): %w", region, err)
+		}
+		cli := sts.NewFromConfig(awsCfg)
+		if _, err := cli.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{}); err != nil {
+			return fmt.Errorf("sts:GetCallerIdentity (region=%q): %w", region, err)
+		}
+	}
+	return nil
+}
+
+// applySummary prints a one-line summary to stderr when a multi-file apply
+// fails partway through. With a single config or zero applied so far there's
+// nothing useful to say, so it stays silent.
+func applySummary(applied []string, cfgs []*Config, failedIdx int, err error) {
+	if len(cfgs) <= 1 || len(applied) == 0 {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "applied %d of %d config file(s) before error in %s\n",
+		len(applied), len(cfgs), cfgs[failedIdx].sourcePath)
 }
 
 // stdinIsTTY reports whether stdin is attached to a real terminal. Non-TTY

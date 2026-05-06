@@ -769,6 +769,52 @@ func TestTfstateFuncs(t *testing.T) {
 	})
 }
 
+func TestApplySummary(t *testing.T) {
+	t.Run("single config: silent", func(t *testing.T) {
+		cfgs := []*Config{{sourcePath: "only.yaml"}}
+		out := captureStderrFn(t, func() {
+			applySummary(nil, cfgs, 0, errors.New("boom"))
+		})
+		if out != "" {
+			t.Errorf("single-config summary should be empty, got %q", out)
+		}
+	})
+	t.Run("multi config with no prior success: silent", func(t *testing.T) {
+		cfgs := []*Config{{sourcePath: "a.yaml"}, {sourcePath: "b.yaml"}}
+		out := captureStderrFn(t, func() {
+			applySummary(nil, cfgs, 0, errors.New("boom"))
+		})
+		if out != "" {
+			t.Errorf("first-file failure summary should be empty, got %q", out)
+		}
+	})
+	t.Run("multi config with partial success: prints summary", func(t *testing.T) {
+		cfgs := []*Config{{sourcePath: "a.yaml"}, {sourcePath: "b.yaml"}, {sourcePath: "c.yaml"}}
+		out := captureStderrFn(t, func() {
+			applySummary([]string{"a.yaml"}, cfgs, 1, errors.New("boom"))
+		})
+		if !strings.Contains(out, "1 of 3") || !strings.Contains(out, "b.yaml") {
+			t.Errorf("expected '1 of 3 ... b.yaml' summary, got %q", out)
+		}
+	})
+}
+
+// captureStderrFn synchronously captures stderr for tests that don't
+// need the goroutine pipe (the apply_test.go captureStderr is fine for
+// flows; this is for one-shot summary writes).
+func captureStderrFn(t *testing.T, fn func()) string {
+	t.Helper()
+	orig := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+	fn()
+	_ = w.Close()
+	os.Stderr = orig
+	var buf [4096]byte
+	n, _ := r.Read(buf[:])
+	return string(buf[:n])
+}
+
 func TestExpandTemplate(t *testing.T) {
 	t.Setenv("EBS_TEST_VAR", "hello")
 	t.Run("env funcs", func(t *testing.T) {
