@@ -1,13 +1,11 @@
 # 09-base-file/_base.yaml: shared scaffolding inherited by sibling files
 # via `baseFile: _base.yaml`.
 #
-# Only scalars (region / account / cluster / groupName / eventBusName /
-# trackingId) and tags are inherited; rules / schedules belong in the
-# child file. Declaring rules / schedules here is rejected at load time.
+# Only scalars (region / groupName / eventBusName / trackingId) and tags
+# are inherited; rules / schedules belong in the child file. Declaring
+# rules / schedules here is rejected at load time.
 
 region: ap-northeast-1
-account: '{{ must_env "AWS_ACCOUNT_ID" }}'
-cluster: shared-cluster
 tags:
   Service: my-app
   ManagedBy: ebschedule

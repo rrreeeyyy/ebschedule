@@ -1,6 +1,6 @@
-# 09-base-file/prod.yaml: production rules inheriting region / account /
-# cluster / tags from _base.yaml. Combined with cluster-shorthand (G3) the
-# child file shrinks to just the resources you actually own.
+# 09-base-file/prod.yaml: production rules inheriting region / tags from
+# _base.yaml. Each child file owns its own resources; only scaffolding is
+# shared.
 
 baseFile: _base.yaml
 trackingId: my-app-prod
@@ -13,10 +13,10 @@ rules:
     state: ENABLED
     targets:
       - id: ecs
-        # arn: omitted; cluster shortcut from _base.yaml fires
-        roleArn: ecsEventsRole
+        arn: arn:aws:ecs:ap-northeast-1:{{ must_env "AWS_ACCOUNT_ID" }}:cluster/shared-cluster
+        roleArn: arn:aws:iam::{{ must_env "AWS_ACCOUNT_ID" }}:role/ecsEventsRole
         ecsParameters:
-          taskDefinitionArn: my-app-prod-batch
+          taskDefinitionArn: arn:aws:ecs:ap-northeast-1:{{ must_env "AWS_ACCOUNT_ID" }}:task-definition/my-app-prod-batch
           launchType: FARGATE
           subnets: [subnet-aaa, subnet-bbb]
           securityGroups: [sg-egress]
