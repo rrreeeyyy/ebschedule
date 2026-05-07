@@ -45,6 +45,48 @@ to `github.token`), `install-dir` (defaults to `/usr/local/bin`).
 
 ## Quick start
 
+ebschedule covers two AWS services in one config:
+
+- `rules:` — **EventBridge Rules** (the older bus-attached service).
+  Triggered by `scheduleExpression` (cron / rate) **or** `eventPattern`
+  (events on a bus). Wide target set: ECS RunTask, Lambda, Step
+  Functions, SQS, SNS, Kinesis, Batch, API Destination, …
+- `schedules:` — **EventBridge Scheduler** (the newer time-only
+  service). cron / rate / one-shot `at(...)`, timezone-aware
+  (`timezone:`), with schedule groups and the
+  universal AWS-SDK target. No `eventPattern` — time triggers only.
+
+A single YAML can manage both, and `dump` / `diff` / `apply` operate on
+whichever is present. Minimal example covering both:
+
+```yaml
+# ebschedule.yaml
+region: ap-northeast-1
+trackingId: my-app
+
+# EventBridge Rules: scheduleExpression OR eventPattern
+rules:
+  - name: nightly-etl
+    scheduleExpression: cron(0 18 * * ? *)
+    state: ENABLED
+    targets:
+      - id: lambda
+        arn: arn:aws:lambda:ap-northeast-1:{{ must_env "AWS_ACCOUNT_ID" }}:function:etl
+
+# EventBridge Scheduler: time-only, timezone-aware
+schedules:
+  - name: weekly-rollup
+    scheduleExpression: cron(0 9 ? * MON *)
+    timezone: Asia/Tokyo
+    state: ENABLED
+    target:
+      arn: arn:aws:lambda:ap-northeast-1:{{ must_env "AWS_ACCOUNT_ID" }}:function:rollup
+      roleArn: arn:aws:iam::{{ must_env "AWS_ACCOUNT_ID" }}:role/SchedulerInvokeLambda
+```
+
+ECS RunTask gets its own ecschedule-compatible shorthand — see
+[ECS RunTask shorthand](#ecs-runtask-shorthand-ecschedule-compatible).
+
 ```sh
 # bootstrap a config from what's already in AWS
 ebschedule dump my-app- > ebschedule.yaml
