@@ -197,6 +197,7 @@ Config files run through `text/template` **before** YAML parsing:
 | `{{ env "X" }}`                   | Empty string if `X` is unset                                                                   |
 | `{{ must_env "X" }}`              | Errors out (or placeholder under `validate`)                                                   |
 | `{{ ssm "/p/k" }}`                | SSM Parameter Store, decrypted, region from AWS creds                                          |
+| `{{ ssm "/p/list" idx }}`         | StringList element access (matches ecschedule's `ssm` signature); errors on out-of-range idx   |
 | `{{ tfstate "type.name.attr" }}`  | Terraform state lookup; needs `EBSCHEDULE_TFSTATE_URL` env                                     |
 | `{{ tfstatef "type.%s.attr" x }}` | sprintf-style tfstate helper from `fujiwara/tfstate-lookup`; same `EBSCHEDULE_TFSTATE_URL` env |
 
@@ -323,6 +324,7 @@ config can be written in either format:
 | `std.native('env')(name, default)` | `{{ env "NAME" }}` |
 | `std.native('must_env')(name)` | `{{ must_env "NAME" }}` |
 | `std.native('ssm')(name)` | `{{ ssm "/path" }}` |
+| `std.native('ssmList')(name)` (returns array) | `{{ ssm "/path" idx }}` (single element) |
 | `std.native('tfstate')(resource)` | `{{ tfstate "type.name.attr" }}` |
 
 `std.extVar` is left for explicit user-supplied values. Local imports

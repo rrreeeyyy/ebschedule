@@ -6,6 +6,7 @@
 //   std.native('env')(name, default)     // env or default
 //   std.native('must_env')(name)         // env or error
 //   std.native('ssm')(name)              // SSM Parameter Store, decrypted
+//   std.native('ssmList')(name)          // SSM StringList split on commas, returned as array
 //   std.native('tfstate')(resource)      // tfstate lookup (EBSCHEDULE_TFSTATE_URL)
 //   std.native('tfstatef')(fmt, args...) // tfstate sprintf-style helper
 //
