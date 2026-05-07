@@ -60,7 +60,9 @@ changelog:
       - '^docs:'
       - '^test:'
       - '^ci:'
-      # Drop boring chores but keep dependency bumps in the changelog
-      # (they may carry CVE fixes or feature unlocks).
-      - '^chore(?!\(deps\)):'
+      # Drop boring chores. `chore(deps): bump …` keeps showing in the
+      # changelog because the literal `^chore: ` pattern doesn't match
+      # the scoped form (RE2 has no negative lookahead, so we can't write
+      # `^chore(?!\(deps\)):` directly).
+      - '^chore: '
       - 'Merge pull request'
