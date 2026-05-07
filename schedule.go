@@ -45,7 +45,7 @@ type Schedule struct {
 	Description                string              `yaml:"description,omitempty"`
 	GroupName                  string              `yaml:"groupName,omitempty"`
 	ScheduleExpression         string              `yaml:"scheduleExpression"`
-	ScheduleExpressionTimezone string              `yaml:"timezone,omitempty"`
+	ScheduleExpressionTimezone string              `yaml:"scheduleExpressionTimezone,omitempty"`
 	State                      string              `yaml:"state,omitempty"` // ENABLED | DISABLED
 	StartDate                  string              `yaml:"startDate,omitempty"`
 	EndDate                    string              `yaml:"endDate,omitempty"`
@@ -350,8 +350,9 @@ func diffSchedules(ctx context.Context, out io.Writer, cfg *Config) (bool, error
 			cur[s.Name] = s
 		}
 		for _, want := range byGroup[g] {
-			// Canonicalize the user side too so an explicit `timezone: UTC` (or
-			// other defaulted value) compares equal to a stripped remote view.
+			// Canonicalize the user side too so an explicit
+			// `scheduleExpressionTimezone: UTC` (or other defaulted value)
+			// compares equal to a stripped remote view.
 			desiredYAML := mustYAML(canonicalizeSchedule(want))
 			got, ok := cur[want.Name]
 			if !ok {

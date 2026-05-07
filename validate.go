@@ -235,7 +235,7 @@ func validateSchedule(s *Schedule, path string) []string {
 	}
 	if s.ScheduleExpressionTimezone != "" {
 		if _, err := time.LoadLocation(s.ScheduleExpressionTimezone); err != nil {
-			errs = append(errs, fmt.Sprintf("%s.timezone: invalid IANA timezone %q", path, s.ScheduleExpressionTimezone))
+			errs = append(errs, fmt.Sprintf("%s.scheduleExpressionTimezone: invalid IANA timezone %q", path, s.ScheduleExpressionTimezone))
 		}
 	}
 	if s.State != "" && s.State != "ENABLED" && s.State != "DISABLED" {
