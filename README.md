@@ -39,7 +39,7 @@ jobs:
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ap-northeast-1
-      - uses: rrreeeyyy/ebschedule@v1
+      - uses: rrreeeyyy/ebschedule@v0.1.0
         with:
           version: v0.1.0          # or "latest" (default)
       - run: ebschedule -conf 'config/*.yaml' -auto-approve -prune apply
@@ -133,7 +133,7 @@ Rules and Schedules.
 | `diff`              |     ✓     |      —      | Unified-diff per resource; exits 2 on drift        |
 | `apply`             |     ✓     |      ✓      | Create / update; `-dry-run` keeps it read-only. Pre-flight verifies AWS creds + every referenced ECS task definition exists |
 | `-prune apply`      |     ✓     |      ✓      | Apply + delete tracked resources missing from config |
-| `run -rule NAME`    |     ✓     |      ✓      | Invoke a rule's targets right now (ECS / Lambda / SFN); `-dry-run` skips AWS |
+| `run -rule NAME`    |     ✓     |      ✓      | Invoke a rule's targets right now; `-dry-run` skips AWS. Supported: ECS RunTask, Lambda, Step Functions, Batch, Glue, CodeBuild, CodePipeline, SageMaker Pipeline, Redshift Data |
 | `import-ecschedule` |     —     |      —      | Convert an ecschedule YAML to ebschedule format    |
 
 ## Config semantics: omitted vs. empty
@@ -498,12 +498,24 @@ ebschedule -conf ebschedule.yaml run -rule example-nightly-etl
 ebschedule -conf ebschedule.yaml -dry-run run -rule example-nightly-etl
 ```
 
-Dispatch is by target ARN: `arn:aws:ecs:.../cluster/...` (with
-`ecsParameters`) calls `ecs:RunTask`, `arn:aws:lambda:.../function:...`
-calls `lambda:Invoke` (passing `target.input` as the payload, defaulting
-to `{}`), and `arn:aws:states:.../stateMachine:...` calls
-`sfn:StartExecution`. Other target types error with a clear "not a
-supported invocation type" message.
+Dispatch is by target ARN:
+
+| ARN prefix | API call | Inputs |
+| --- | --- | --- |
+| `arn:aws:ecs:.../cluster/...` (with `ecsParameters`) | `ecs:RunTask` | `ecsParameters` + `target.input` overrides envelope |
+| `arn:aws:lambda:.../function:...` | `lambda:Invoke` | `target.input` payload (defaults to `{}`) |
+| `arn:aws:states:.../stateMachine:...` | `sfn:StartExecution` | `target.input` |
+| `arn:aws:batch:.../job-queue/...` | `batch:SubmitJob` | `batchParameters` (jobDefinition required) |
+| `arn:aws:glue:.../job/...` | `glue:StartJobRun` | parsed job name |
+| `arn:aws:codebuild:.../project/...` | `codebuild:StartBuild` | parsed project name |
+| `arn:aws:codepipeline:.../<name>` | `codepipeline:StartPipelineExecution` | parsed pipeline name |
+| `arn:aws:sagemaker:.../pipeline/...` | `sagemaker:StartPipelineExecution` | `sageMakerPipelineParameters` |
+| `arn:aws:redshift:.../cluster:...` or `arn:aws:redshift-serverless:.../workgroup/...` | `redshift-data:ExecuteStatement` | `redshiftDataParameters` (database + sql required) |
+
+Other target types (SQS / SNS / Kinesis / API Destination / EC2 actions
+/ Systems Manager) error with a clear "not a supported invocation type"
+message — they don't have a clean "fire once" semantic that fits ad-hoc
+invocation.
 
 For ECS targets, when `target.input` carries the ecschedule-shaped
 `{containerOverrides, taskOverride}` payload (the same JSON
