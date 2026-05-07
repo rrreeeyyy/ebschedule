@@ -30,15 +30,25 @@ the runner's OS/arch and adds it to `PATH`:
 jobs:
   apply:
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write   # for aws-actions/configure-aws-credentials OIDC
+      contents: read
     steps:
       - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ap-northeast-1
       - uses: rrreeeyyy/ebschedule@v1
         with:
           version: v0.1.0          # or "latest" (default)
-      - run: ebschedule -conf config/ -prune apply
-        env:
-          AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+      - run: ebschedule -conf 'config/*.yaml' -auto-approve -prune apply
 ```
+
+`-auto-approve` skips the interactive confirmation that `apply` shows
+on a terminal. AWS credentials come from the standard SDK chain — here
+via OIDC role assumption with `aws-actions/configure-aws-credentials`,
+which is the typical shape for "ebschedule applies from CI."
 
 Inputs: `version` (release tag or `latest`), `github-token` (defaults
 to `github.token`), `install-dir` (defaults to `/usr/local/bin`).
@@ -197,7 +207,10 @@ Under `validate`, AWS / tfstate is never called: `ssm` returns
 `<ssm:/path>`, `tfstate` returns `<tfstate:type.name.attr>`, and
 `must_env` falls back to `<env:NAME>` so the structural check works
 offline. Target ARN validation accepts those placeholders so a config
-pulling ARNs from tfstate validates without the URL set.
+pulling ARNs from tfstate validates without the URL set. The same
+placeholder fallback applies to jsonnet's `std.native('must_env'|'ssm'
+|'tfstate')`, so jsonnet configs validate offline without exported env
+vars or AWS access either.
 
 `EBSCHEDULE_TFSTATE_URL` accepts a local path, `s3://`, `http(s)://`,
 or a Terraform Cloud (`remote://`) workspace. GCS and Azurerm backends
@@ -210,7 +223,8 @@ to slim the binary; rebuild without those tags if you need them. See
 Unified-diff (git-style) per resource, comparing remote vs desired YAML.
 
 For Schedules, the comparison strips Scheduler's documented defaults
-(`scheduleExpressionTimezone: UTC`, `actionAfterCompletion: NONE`, `retryPolicy: {185, 86400}`)
+(`scheduleExpressionTimezone: UTC`, `actionAfterCompletion: NONE`,
+`retryPolicy: {maximumRetryAttempts: 185, maximumEventAgeInSeconds: 86400}`)
 on both sides, so a YAML that explicitly writes those defaults still
 shows as no-op.
 
@@ -537,16 +551,6 @@ ebschedule -conf 'config/*.yaml' -prune apply
 
 See [examples/multi-file/](./examples/multi-file) for a worked layout
 (shared Rule + per-team schedule groups).
-
-## Files
-
-- `main.go` — CLI dispatch, `Config`, template / SSM helpers, tag reconciliation
-- `rule.go` — EventBridge Rule operations
-- `schedule.go` — EventBridge Scheduler operations + group auto-create
-- `validate.go` — offline structural validation
-- `import.go` — ecschedule → ebschedule converter
-- `ebschedule.yaml` — example covering Rules + Schedules
-- `examples/` — focused per-feature configs (see [examples/README.md](./examples/README.md))
 
 ## Extend
 
