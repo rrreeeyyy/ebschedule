@@ -53,7 +53,7 @@ ebschedule covers two AWS services in one config:
   Functions, SQS, SNS, Kinesis, Batch, API Destination, …
 - `schedules:` — **EventBridge Scheduler** (the newer time-only
   service). cron / rate / one-shot `at(...)`, timezone-aware
-  (`timezone:`), with schedule groups and the
+  (`scheduleExpressionTimezone:`), with schedule groups and the
   universal AWS-SDK target. No `eventPattern` — time triggers only.
 
 A single YAML can manage both, and `dump` / `diff` / `apply` operate on
@@ -77,7 +77,7 @@ rules:
 schedules:
   - name: weekly-rollup
     scheduleExpression: cron(0 9 ? * MON *)
-    timezone: Asia/Tokyo
+    scheduleExpressionTimezone: Asia/Tokyo
     state: ENABLED
     target:
       arn: arn:aws:lambda:ap-northeast-1:{{ must_env "AWS_ACCOUNT_ID" }}:function:rollup
@@ -210,7 +210,7 @@ to slim the binary; rebuild without those tags if you need them. See
 Unified-diff (git-style) per resource, comparing remote vs desired YAML.
 
 For Schedules, the comparison strips Scheduler's documented defaults
-(`timezone: UTC`, `actionAfterCompletion: NONE`, `retryPolicy: {185, 86400}`)
+(`scheduleExpressionTimezone: UTC`, `actionAfterCompletion: NONE`, `retryPolicy: {185, 86400}`)
 on both sides, so a YAML that explicitly writes those defaults still
 shows as no-op.
 

@@ -30,7 +30,7 @@ schedules:
   - name: team-a-batch
     groupName: examples-team-a
     scheduleExpression: cron(0 2 * * ? *)
-    timezone: Asia/Tokyo
+    scheduleExpressionTimezone: Asia/Tokyo
     state: ENABLED
     flexibleTimeWindow:
       mode: FLEXIBLE
@@ -42,7 +42,7 @@ schedules:
   - name: team-b-batch
     groupName: examples-team-b
     scheduleExpression: cron(0 4 * * ? *)
-    timezone: Asia/Tokyo
+    scheduleExpressionTimezone: Asia/Tokyo
     state: ENABLED
     flexibleTimeWindow:
       mode: OFF

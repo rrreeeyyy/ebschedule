@@ -20,7 +20,7 @@ schedules:
   - name: daily-report-jst
     description: Send daily report at 09:00 Asia/Tokyo
     scheduleExpression: cron(0 9 * * ? *)
-    timezone: Asia/Tokyo
+    scheduleExpressionTimezone: Asia/Tokyo
     state: ENABLED
     flexibleTimeWindow:
       mode: OFF
@@ -34,7 +34,7 @@ schedules:
   # One-shot fire-and-forget: runs once at the given time, then auto-deletes.
   - name: one-shot-migration
     scheduleExpression: at(2026-06-01T03:00:00)
-    timezone: Asia/Tokyo
+    scheduleExpressionTimezone: Asia/Tokyo
     actionAfterCompletion: DELETE
     flexibleTimeWindow:
       mode: OFF

@@ -13,7 +13,7 @@ tags:
 schedules:
   - name: team-a-rollup
     scheduleExpression: cron(0 1 * * ? *)
-    timezone: Asia/Tokyo
+    scheduleExpressionTimezone: Asia/Tokyo
     state: ENABLED
     flexibleTimeWindow:
       mode: OFF
