@@ -11,16 +11,24 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/batch"
+	batchtypes "github.com/aws/aws-sdk-go-v2/service/batch/types"
+	"github.com/aws/aws-sdk-go-v2/service/codebuild"
+	"github.com/aws/aws-sdk-go-v2/service/codepipeline"
 	"github.com/aws/aws-sdk-go-v2/service/ecs"
 	ecstypes "github.com/aws/aws-sdk-go-v2/service/ecs/types"
+	"github.com/aws/aws-sdk-go-v2/service/glue"
 	"github.com/aws/aws-sdk-go-v2/service/lambda"
 	lambdatypes "github.com/aws/aws-sdk-go-v2/service/lambda/types"
+	"github.com/aws/aws-sdk-go-v2/service/redshiftdata"
+	"github.com/aws/aws-sdk-go-v2/service/sagemaker"
+	sagemakertypes "github.com/aws/aws-sdk-go-v2/service/sagemaker/types"
 	"github.com/aws/aws-sdk-go-v2/service/sfn"
 )
 
-// ecsRunAPI / lambdaInvokeAPI / sfnStartAPI are the per-service subsets used
-// by the run subcommand. Defining them here lets tests inject fakes; the
-// real *ecs.Client / *lambda.Client / *sfn.Client implement them implicitly.
+// Per-service subsets used by the run subcommand. Defining them here lets
+// tests inject fakes; the real *ecs.Client / *lambda.Client / etc. all
+// implement these implicitly.
 type ecsRunAPI interface {
 	RunTask(ctx context.Context, in *ecs.RunTaskInput, optFns ...func(*ecs.Options)) (*ecs.RunTaskOutput, error)
 }
@@ -33,12 +41,42 @@ type sfnStartAPI interface {
 	StartExecution(ctx context.Context, in *sfn.StartExecutionInput, optFns ...func(*sfn.Options)) (*sfn.StartExecutionOutput, error)
 }
 
+type batchSubmitAPI interface {
+	SubmitJob(ctx context.Context, in *batch.SubmitJobInput, optFns ...func(*batch.Options)) (*batch.SubmitJobOutput, error)
+}
+
+type glueStartAPI interface {
+	StartJobRun(ctx context.Context, in *glue.StartJobRunInput, optFns ...func(*glue.Options)) (*glue.StartJobRunOutput, error)
+}
+
+type codebuildStartAPI interface {
+	StartBuild(ctx context.Context, in *codebuild.StartBuildInput, optFns ...func(*codebuild.Options)) (*codebuild.StartBuildOutput, error)
+}
+
+type codepipelineStartAPI interface {
+	StartPipelineExecution(ctx context.Context, in *codepipeline.StartPipelineExecutionInput, optFns ...func(*codepipeline.Options)) (*codepipeline.StartPipelineExecutionOutput, error)
+}
+
+type sagemakerStartAPI interface {
+	StartPipelineExecution(ctx context.Context, in *sagemaker.StartPipelineExecutionInput, optFns ...func(*sagemaker.Options)) (*sagemaker.StartPipelineExecutionOutput, error)
+}
+
+type redshiftDataAPI interface {
+	ExecuteStatement(ctx context.Context, in *redshiftdata.ExecuteStatementInput, optFns ...func(*redshiftdata.Options)) (*redshiftdata.ExecuteStatementOutput, error)
+}
+
 // runClients bundles the per-service AWS clients run dispatches to. Tests
 // pass fakes; production wiring constructs real ones in newRunClients.
 type runClients struct {
-	ECS    ecsRunAPI
-	Lambda lambdaInvokeAPI
-	SFN    sfnStartAPI
+	ECS          ecsRunAPI
+	Lambda       lambdaInvokeAPI
+	SFN          sfnStartAPI
+	Batch        batchSubmitAPI
+	Glue         glueStartAPI
+	CodeBuild    codebuildStartAPI
+	CodePipeline codepipelineStartAPI
+	SageMaker    sagemakerStartAPI
+	RedshiftData redshiftDataAPI
 }
 
 // targetKind enumerates the target shapes the run subcommand can dispatch.
@@ -49,12 +87,18 @@ const (
 	targetKindECS
 	targetKindLambda
 	targetKindSFN
+	targetKindBatch
+	targetKindGlue
+	targetKindCodeBuild
+	targetKindCodePipeline
+	targetKindSageMakerPipeline
+	targetKindRedshiftData
 )
 
 // classifyTarget inspects t.Arn (with t.EcsParameters as a tiebreaker for
 // ECS) to decide which AWS API to call. Returns targetKindUnsupported with
 // a descriptive error for everything ebschedule run does not handle yet
-// (SQS, SNS, Kinesis, Batch, Redshift Data, API Destination, etc.).
+// (SQS, SNS, Kinesis, API Destination, EC2 actions, etc.).
 func classifyTarget(t *Target) (targetKind, error) {
 	arn := t.Arn
 	switch {
@@ -64,8 +108,21 @@ func classifyTarget(t *Target) (targetKind, error) {
 		return targetKindLambda, nil
 	case strings.HasPrefix(arn, "arn:aws:states:") && strings.Contains(arn, ":stateMachine:"):
 		return targetKindSFN, nil
+	case strings.HasPrefix(arn, "arn:aws:batch:") && strings.Contains(arn, ":job-queue/"):
+		return targetKindBatch, nil
+	case strings.HasPrefix(arn, "arn:aws:glue:") && strings.Contains(arn, ":job/"):
+		return targetKindGlue, nil
+	case strings.HasPrefix(arn, "arn:aws:codebuild:") && strings.Contains(arn, ":project/"):
+		return targetKindCodeBuild, nil
+	case strings.HasPrefix(arn, "arn:aws:codepipeline:"):
+		return targetKindCodePipeline, nil
+	case strings.HasPrefix(arn, "arn:aws:sagemaker:") && strings.Contains(arn, ":pipeline/"):
+		return targetKindSageMakerPipeline, nil
+	case strings.HasPrefix(arn, "arn:aws:redshift:") && strings.Contains(arn, ":cluster:"),
+		strings.HasPrefix(arn, "arn:aws:redshift-serverless:") && strings.Contains(arn, ":workgroup/"):
+		return targetKindRedshiftData, nil
 	default:
-		return targetKindUnsupported, fmt.Errorf("run: target %q (arn=%q) is not a supported invocation type (ECS RunTask / Lambda Invoke / Step Functions StartExecution)", t.ID, arn)
+		return targetKindUnsupported, fmt.Errorf("run: target %q (arn=%q) is not a supported invocation type (ECS RunTask / Lambda Invoke / Step Functions StartExecution / Batch SubmitJob / Glue StartJobRun / CodeBuild StartBuild / CodePipeline StartPipelineExecution / SageMaker Pipeline StartPipelineExecution / Redshift Data ExecuteStatement)", t.ID, arn)
 	}
 }
 
@@ -110,6 +167,18 @@ func runTarget(ctx context.Context, out io.Writer, cli *runClients, r *Rule, t *
 		return runLambdaTarget(ctx, out, cli.Lambda, t, dryRun)
 	case targetKindSFN:
 		return runSFNTarget(ctx, out, cli.SFN, r, t, dryRun)
+	case targetKindBatch:
+		return runBatchTarget(ctx, out, cli.Batch, r, t, dryRun)
+	case targetKindGlue:
+		return runGlueTarget(ctx, out, cli.Glue, t, dryRun)
+	case targetKindCodeBuild:
+		return runCodeBuildTarget(ctx, out, cli.CodeBuild, t, dryRun)
+	case targetKindCodePipeline:
+		return runCodePipelineTarget(ctx, out, cli.CodePipeline, t, dryRun)
+	case targetKindSageMakerPipeline:
+		return runSageMakerTarget(ctx, out, cli.SageMaker, r, t, dryRun)
+	case targetKindRedshiftData:
+		return runRedshiftDataTarget(ctx, out, cli.RedshiftData, t, dryRun)
 	default:
 		return fmt.Errorf("run: classifier returned unknown kind for target %q", t.ID)
 	}
@@ -384,10 +453,237 @@ func newRunClients(ctx context.Context, region string) (*runClients, error) {
 		return nil, err
 	}
 	return &runClients{
-		ECS:    ecs.NewFromConfig(awsCfg),
-		Lambda: lambda.NewFromConfig(awsCfg),
-		SFN:    sfn.NewFromConfig(awsCfg),
+		ECS:          ecs.NewFromConfig(awsCfg),
+		Lambda:       lambda.NewFromConfig(awsCfg),
+		SFN:          sfn.NewFromConfig(awsCfg),
+		Batch:        batch.NewFromConfig(awsCfg),
+		Glue:         glue.NewFromConfig(awsCfg),
+		CodeBuild:    codebuild.NewFromConfig(awsCfg),
+		CodePipeline: codepipeline.NewFromConfig(awsCfg),
+		SageMaker:    sagemaker.NewFromConfig(awsCfg),
+		RedshiftData: redshiftdata.NewFromConfig(awsCfg),
 	}, nil
+}
+
+// arnTrailingPath returns the substring after the last `/` in arn. Useful
+// for ARNs of the form `arn:aws:<svc>:<region>:<account>:<type>/<name>`
+// where the leaf name lives after a single `/`. Falls back to the input.
+func arnTrailingPath(arn string) string {
+	if i := strings.LastIndex(arn, "/"); i >= 0 {
+		return arn[i+1:]
+	}
+	return arn
+}
+
+// arnTrailingColon parses `arn:aws:<svc>:...:<type>:<name>` (e.g.
+// `arn:aws:redshift:...:cluster:my-cluster`). Splits at the LAST `:` and
+// returns the name segment. Falls back to the input.
+func arnTrailingColon(arn string) string {
+	if i := strings.LastIndex(arn, ":"); i >= 0 {
+		return arn[i+1:]
+	}
+	return arn
+}
+
+// arnLastSegment parses pipeline-style ARNs where the trailing segment is
+// the resource name with no separator before it (e.g.
+// `arn:aws:codepipeline:region:account:pipeline-name`). Equivalent to
+// arnTrailingColon for that shape; named distinctly for clarity at call
+// sites.
+func arnLastSegment(arn string) string {
+	return arnTrailingColon(arn)
+}
+
+// runBatchTarget calls batch:SubmitJob. The target ARN is the job-queue;
+// jobDefinition + jobName / arraySize / retryAttempts come from the rule's
+// batchParameters. JobName defaults to "<rule>-<unix-ms>" when omitted so
+// repeated invocations don't collide on Batch's name-uniqueness window.
+func runBatchTarget(ctx context.Context, out io.Writer, cli batchSubmitAPI, r *Rule, t *Target, dryRun bool) error {
+	bp := t.BatchParameters
+	if bp == nil || bp.JobDefinition == "" {
+		return fmt.Errorf("batch:SubmitJob requires batchParameters.jobDefinition on the target")
+	}
+	jobName := bp.JobName
+	if jobName == "" {
+		jobName = fmt.Sprintf("ebschedule-run-%s-%d", r.Name, time.Now().UnixMilli())
+	}
+	if dryRun {
+		fmt.Fprintf(out, "[dry-run] batch:SubmitJob queue=%s jobDefinition=%s jobName=%s\n",
+			t.Arn, bp.JobDefinition, jobName)
+		return nil
+	}
+	in := &batch.SubmitJobInput{
+		JobName:       aws.String(jobName),
+		JobQueue:      aws.String(t.Arn),
+		JobDefinition: aws.String(bp.JobDefinition),
+	}
+	if bp.ArraySize > 0 {
+		in.ArrayProperties = &batchtypes.ArrayProperties{Size: aws.Int32(bp.ArraySize)}
+	}
+	if bp.RetryAttempts > 0 {
+		in.RetryStrategy = &batchtypes.RetryStrategy{Attempts: aws.Int32(bp.RetryAttempts)}
+	}
+	resp, err := cli.SubmitJob(ctx, in)
+	if err != nil {
+		return fmt.Errorf("batch:SubmitJob: %w", err)
+	}
+	fmt.Fprintf(out, "batch:SubmitJob jobId=%s jobName=%s\n",
+		aws.ToString(resp.JobId), aws.ToString(resp.JobName))
+	return nil
+}
+
+// runGlueTarget calls glue:StartJobRun. The target ARN is the Glue job
+// (`arn:aws:glue:region:account:job/<name>`); the job name is parsed out
+// for the SDK input. We don't pass Arguments — our schema doesn't model
+// per-run Glue arguments and the EventBridge wiring usually leaves them
+// implicit too.
+func runGlueTarget(ctx context.Context, out io.Writer, cli glueStartAPI, t *Target, dryRun bool) error {
+	jobName := arnTrailingPath(t.Arn)
+	if dryRun {
+		fmt.Fprintf(out, "[dry-run] glue:StartJobRun jobName=%s\n", jobName)
+		return nil
+	}
+	resp, err := cli.StartJobRun(ctx, &glue.StartJobRunInput{
+		JobName: aws.String(jobName),
+	})
+	if err != nil {
+		return fmt.Errorf("glue:StartJobRun: %w", err)
+	}
+	fmt.Fprintf(out, "glue:StartJobRun jobRunId=%s\n", aws.ToString(resp.JobRunId))
+	return nil
+}
+
+// runCodeBuildTarget calls codebuild:StartBuild. The target ARN is the
+// CodeBuild project (`arn:aws:codebuild:region:account:project/<name>`);
+// the project name is parsed out for the SDK input.
+func runCodeBuildTarget(ctx context.Context, out io.Writer, cli codebuildStartAPI, t *Target, dryRun bool) error {
+	project := arnTrailingPath(t.Arn)
+	if dryRun {
+		fmt.Fprintf(out, "[dry-run] codebuild:StartBuild project=%s\n", project)
+		return nil
+	}
+	resp, err := cli.StartBuild(ctx, &codebuild.StartBuildInput{
+		ProjectName: aws.String(project),
+	})
+	if err != nil {
+		return fmt.Errorf("codebuild:StartBuild: %w", err)
+	}
+	id := ""
+	if resp.Build != nil {
+		id = aws.ToString(resp.Build.Id)
+	}
+	fmt.Fprintf(out, "codebuild:StartBuild buildId=%s\n", id)
+	return nil
+}
+
+// runCodePipelineTarget calls codepipeline:StartPipelineExecution. The
+// target ARN's trailing segment is the pipeline name
+// (`arn:aws:codepipeline:region:account:<pipeline-name>`).
+func runCodePipelineTarget(ctx context.Context, out io.Writer, cli codepipelineStartAPI, t *Target, dryRun bool) error {
+	pipeline := arnLastSegment(t.Arn)
+	if dryRun {
+		fmt.Fprintf(out, "[dry-run] codepipeline:StartPipelineExecution pipeline=%s\n", pipeline)
+		return nil
+	}
+	resp, err := cli.StartPipelineExecution(ctx, &codepipeline.StartPipelineExecutionInput{
+		Name: aws.String(pipeline),
+	})
+	if err != nil {
+		return fmt.Errorf("codepipeline:StartPipelineExecution: %w", err)
+	}
+	fmt.Fprintf(out, "codepipeline:StartPipelineExecution executionId=%s\n",
+		aws.ToString(resp.PipelineExecutionId))
+	return nil
+}
+
+// runSageMakerTarget calls sagemaker:StartPipelineExecution. The target
+// ARN is the pipeline (`arn:aws:sagemaker:region:account:pipeline/<name>`);
+// the pipeline name is parsed out. PipelineParameters from the target's
+// sageMakerPipelineParameters are passed straight through. The execution
+// name embeds the rule name + a millisecond timestamp so repeated `run`
+// invocations don't collide on SageMaker's name-uniqueness window.
+func runSageMakerTarget(ctx context.Context, out io.Writer, cli sagemakerStartAPI, r *Rule, t *Target, dryRun bool) error {
+	pipeline := arnTrailingPath(t.Arn)
+	name := fmt.Sprintf("ebs-run-%s-%d", r.Name, time.Now().UnixMilli())
+	var params []sagemakertypes.Parameter
+	if t.SageMakerPipelineParameters != nil {
+		for _, p := range t.SageMakerPipelineParameters.PipelineParameterList {
+			params = append(params, sagemakertypes.Parameter{
+				Name:  aws.String(p.Name),
+				Value: aws.String(p.Value),
+			})
+		}
+	}
+	if dryRun {
+		fmt.Fprintf(out, "[dry-run] sagemaker:StartPipelineExecution pipeline=%s name=%s parameters=%d\n",
+			pipeline, name, len(params))
+		return nil
+	}
+	resp, err := cli.StartPipelineExecution(ctx, &sagemaker.StartPipelineExecutionInput{
+		PipelineName:                 aws.String(pipeline),
+		PipelineExecutionDisplayName: aws.String(name),
+		PipelineParameters:           params,
+	})
+	if err != nil {
+		return fmt.Errorf("sagemaker:StartPipelineExecution: %w", err)
+	}
+	fmt.Fprintf(out, "sagemaker:StartPipelineExecution arn=%s\n",
+		aws.ToString(resp.PipelineExecutionArn))
+	return nil
+}
+
+// runRedshiftDataTarget calls redshift-data:ExecuteStatement. Cluster vs
+// serverless is detected from the ARN prefix; database / dbUser /
+// secretManagerArn / sql / statementName come from the rule's
+// redshiftDataParameters. If RedshiftDataParameters.Sqls is set with
+// multiple statements, this falls back to the first; multi-statement
+// support would call BatchExecuteStatement instead, deferred for now.
+func runRedshiftDataTarget(ctx context.Context, out io.Writer, cli redshiftDataAPI, t *Target, dryRun bool) error {
+	p := t.RedshiftDataParameters
+	if p == nil || p.Database == "" {
+		return fmt.Errorf("redshift-data:ExecuteStatement requires redshiftDataParameters.database on the target")
+	}
+	sqlText := p.Sql
+	if sqlText == "" && len(p.Sqls) > 0 {
+		sqlText = p.Sqls[0]
+	}
+	if sqlText == "" {
+		return fmt.Errorf("redshift-data:ExecuteStatement requires redshiftDataParameters.sql or .sqls")
+	}
+	in := &redshiftdata.ExecuteStatementInput{
+		Database:      aws.String(p.Database),
+		Sql:           aws.String(sqlText),
+		StatementName: aws.String(p.StatementName),
+	}
+	if p.DbUser != "" {
+		in.DbUser = aws.String(p.DbUser)
+	}
+	if p.SecretManagerArn != "" {
+		in.SecretArn = aws.String(p.SecretManagerArn)
+	}
+	target := ""
+	switch {
+	case strings.HasPrefix(t.Arn, "arn:aws:redshift:"):
+		// arn:aws:redshift:region:account:cluster:<name>
+		in.ClusterIdentifier = aws.String(arnTrailingColon(t.Arn))
+		target = "cluster=" + aws.ToString(in.ClusterIdentifier)
+	case strings.HasPrefix(t.Arn, "arn:aws:redshift-serverless:"):
+		// arn:aws:redshift-serverless:region:account:workgroup/<name>
+		in.WorkgroupName = aws.String(arnTrailingPath(t.Arn))
+		target = "workgroup=" + aws.ToString(in.WorkgroupName)
+	}
+	if dryRun {
+		fmt.Fprintf(out, "[dry-run] redshift-data:ExecuteStatement %s database=%s sqlBytes=%d\n",
+			target, p.Database, len(sqlText))
+		return nil
+	}
+	resp, err := cli.ExecuteStatement(ctx, in)
+	if err != nil {
+		return fmt.Errorf("redshift-data:ExecuteStatement: %w", err)
+	}
+	fmt.Fprintf(out, "redshift-data:ExecuteStatement statementId=%s\n",
+		aws.ToString(resp.Id))
+	return nil
 }
 
 // runRunSubcommand parses `ebschedule run -rule NAME [-dry-run]` and
