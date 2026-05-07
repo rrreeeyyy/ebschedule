@@ -94,9 +94,6 @@ schedules:
       roleArn: arn:aws:iam::{{ must_env "AWS_ACCOUNT_ID" }}:role/SchedulerInvokeLambda
 ```
 
-ECS RunTask gets its own ecschedule-compatible shorthand — see
-[ECS RunTask shorthand](#ecs-runtask-shorthand-ecschedule-compatible).
-
 ```sh
 # bootstrap a config from what's already in AWS
 ebschedule dump my-app- > ebschedule.yaml
@@ -230,52 +227,31 @@ shows as no-op.
 
 The internal `ebschedule-tracking-id` tag is hidden from diff.
 
-## ECS RunTask shorthand (ecschedule-compatible)
+## Account ID
 
-Top-level `region:`, `account:`, and `cluster:` enable short names inside
-ECS RunTask targets:
+ARN-shaped fields (`target.arn`, `target.roleArn`,
+`ecsParameters.taskDefinitionArn`, etc.) take full ARNs. For the
+account segment, use `{{ must_env "AWS_ACCOUNT_ID" }}` in YAML or
+`std.native('must_env')('AWS_ACCOUNT_ID')` in jsonnet so the same
+config can run across accounts.
 
-```yaml
-region: ap-northeast-1
-account: '{{ must_env "AWS_ACCOUNT_ID" }}'
-cluster: my-cluster
-
-rules:
-  - name: nightly
-    scheduleExpression: cron(0 18 * * ? *)
-    targets:
-      - id: ecs
-        # arn: omitted -> arn:aws:ecs:{region}:{account}:cluster/{cluster}
-        roleArn: ecsEventsRole          # -> arn:aws:iam::{account}:role/ecsEventsRole
-        ecsParameters:
-          taskDefinitionArn: my-batch   # -> arn:aws:ecs:{region}:{account}:task-definition/my-batch
-          launchType: FARGATE
-```
-
-Anything already starting with `arn:` is left unchanged, so migration
-from ecschedule is incremental — flip whichever fields you want to short
-names; the rest can stay full ARN.
-
-`account:` defaults to `AWS_ACCOUNT_ID` env when omitted; if neither is
-set, online subcommands (`diff` / `apply` / `dump` / `run`) fill it in
-automatically via `sts:GetCallerIdentity` using the same credentials
-they'll use for the rest of the call. So a single config can be reused
-across accounts without explicit account wiring (matches ecschedule's
-behavior). `validate` and `import-ecschedule` skip the STS lookup so
-they stay offline. See
-[examples/08-cluster-shorthand.yaml](./examples/08-cluster-shorthand.yaml).
+When `AWS_ACCOUNT_ID` is unset, online subcommands (`diff` / `apply` /
+`dump` / `run`) auto-detect via `sts:GetCallerIdentity` using the same
+credentials they'll use for the rest of the call, so the env var
+doesn't need to be exported when running against the calling account.
+`validate` and `import-ecschedule` skip the STS lookup so they stay
+offline (the placeholder fallback under `validate` keeps the
+structural check passing).
 
 ## `baseFile:` config inheritance
 
-Share scaffolding (region / account / cluster / groupName /
-eventBusName / trackingId / tags) across multiple ebschedule yamls
-without copy-pasting:
+Share scaffolding (region / groupName / eventBusName / trackingId /
+tags) across multiple ebschedule yamls without copy-pasting:
 
 ```yaml
 # _base.yaml — shared scaffolding only, no rules: / schedules:
 region: ap-northeast-1
-account: '{{ must_env "AWS_ACCOUNT_ID" }}'
-cluster: my-cluster
+trackingId: my-app
 tags:
   Service: my-app
 ```
@@ -290,9 +266,10 @@ rules:
     scheduleExpression: cron(0 18 * * ? *)
     targets:
       - id: ecs
-        roleArn: ecsEventsRole          # cluster-shorthand still works
+        arn: arn:aws:ecs:ap-northeast-1:{{ must_env "AWS_ACCOUNT_ID" }}:cluster/my-cluster
+        roleArn: arn:aws:iam::{{ must_env "AWS_ACCOUNT_ID" }}:role/ecsEventsRole
         ecsParameters:
-          taskDefinitionArn: my-app-prod-batch
+          taskDefinitionArn: arn:aws:ecs:ap-northeast-1:{{ must_env "AWS_ACCOUNT_ID" }}:task-definition/my-app-prod-batch
           launchType: FARGATE
 ```
 

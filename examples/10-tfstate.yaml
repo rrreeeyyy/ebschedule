@@ -12,7 +12,6 @@
 #   # `apply` resolves the real values.
 
 region: ap-northeast-1
-account: '{{ must_env "AWS_ACCOUNT_ID" }}'
 trackingId: examples-10
 tags:
   Owner: examples

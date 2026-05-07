@@ -32,8 +32,7 @@ AWS_PROFILE=my-sandbox AWS_ACCOUNT_ID=123456789012 \
 | [05-ecs-runtask.yaml](./05-ecs-runtask.yaml) | ECS Fargate RunTask via Rule + `containerOverrides` (the ecschedule pattern) |
 | [06-target-types.yaml](./06-target-types.yaml) | Variety pack: Kinesis, SQS FIFO, Batch, Redshift Data, SageMaker pipeline, API Destination |
 | [07-template-funcs.yaml](./07-template-funcs.yaml) | `env` / `must_env` / `ssm` template substitution |
-| [08-cluster-shorthand.yaml](./08-cluster-shorthand.yaml) | ecschedule-style top-level `cluster:` / `account:` shorthand; short names auto-expand to full ARNs |
-| [09-base-file/](./09-base-file/) | `baseFile:` inheritance: shared region / account / cluster / tags in `_base.yaml`, env-specific rules in `prod.yaml` / `staging.yaml` |
+| [09-base-file/](./09-base-file/) | `baseFile:` inheritance: shared region / trackingId / tags in `_base.yaml`, env-specific rules in `prod.yaml` / `staging.yaml` |
 | [10-tfstate.yaml](./10-tfstate.yaml) | `{{ tfstate "..." }}` lookup against a Terraform state file via `EBSCHEDULE_TFSTATE_URL` |
 | [11-jsonnet/](./11-jsonnet/) | Jsonnet config (`.jsonnet` / `.libsonnet`); env / SSM / tfstate via `std.native('env'\|'must_env'\|'ssm'\|'tfstate')`, imports, comprehensions |
 | [multi-file/](./multi-file/) | Glob-loaded configs: `-conf 'examples/multi-file/*.yaml'`; per-file trackingId keeps prune scoped per team |
@@ -49,18 +48,18 @@ ebschedule -conf examples/09-base-file/staging.yaml apply
 
 ## Bootstrapping from existing AWS
 
-If you already have rules in an account, dump them filtered by tag and use
-the output as a starting point:
+If you already have rules in an account, dump them filtered by tag and
+use the output as a starting point:
 
 ```sh
-ebschedule -conf /dev/null \
+ebschedule \
   -tag Service=my-app \
   -tag Env=prod \
   dump > my-app.yaml
 ```
 
-The `/dev/null` config tells ebschedule "don't read a config file, just hit
-AWS." See the dump section in the top-level README for more.
+`dump` tolerates a missing `ebschedule.yaml` (the default `-conf` path),
+so you don't need to pass `-conf` when bootstrapping from scratch.
 
 ## ecschedule migration
 

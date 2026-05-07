@@ -1,12 +1,11 @@
 # 09-base-file/staging.yaml: staging variant of the same app, inheriting
-# the same _base.yaml. Only the env-specific bits differ; the cluster /
-# region / account / Service tag come from _base.yaml.
+# region / Service tag from _base.yaml. Env-specific bits stay in the
+# child.
 
 baseFile: _base.yaml
 trackingId: my-app-stg
 tags:
   Env: stg
-cluster: stg-cluster              # override the inherited cluster
 
 rules:
   - name: my-app-stg-nightly
@@ -14,9 +13,10 @@ rules:
     state: DISABLED               # staging usually keeps batches off
     targets:
       - id: ecs
-        roleArn: ecsEventsRole
+        arn: arn:aws:ecs:ap-northeast-1:{{ must_env "AWS_ACCOUNT_ID" }}:cluster/stg-cluster
+        roleArn: arn:aws:iam::{{ must_env "AWS_ACCOUNT_ID" }}:role/ecsEventsRole
         ecsParameters:
-          taskDefinitionArn: my-app-stg-batch
+          taskDefinitionArn: arn:aws:ecs:ap-northeast-1:{{ must_env "AWS_ACCOUNT_ID" }}:task-definition/my-app-stg-batch
           launchType: FARGATE
           subnets: [subnet-stg]
           securityGroups: [sg-egress]
