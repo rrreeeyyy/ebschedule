@@ -43,7 +43,7 @@ schedules:
   # Daily 9am JST -> Lambda (timezone supported natively, unlike EB Rules)
   - name: my-app-daily-report
     scheduleExpression: cron(0 9 * * ? *)
-    timezone: Asia/Tokyo
+    scheduleExpressionTimezone: Asia/Tokyo
     state: ENABLED
     flexibleTimeWindow:
       mode: OFF
@@ -57,7 +57,7 @@ schedules:
   # One-shot ECS RunTask, auto-deletes after run
   - name: my-app-migration
     scheduleExpression: at(2026-06-01T03:00:00)
-    timezone: Asia/Tokyo
+    scheduleExpressionTimezone: Asia/Tokyo
     actionAfterCompletion: DELETE
     flexibleTimeWindow:
       mode: OFF
