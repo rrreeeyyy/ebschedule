@@ -778,12 +778,15 @@ func evalJsonnet(path string, raw []byte, offline bool) ([]byte, error) {
 	if offline {
 		vm.NativeFunction(jsonnetMustEnvFuncOffline())
 		vm.NativeFunction(jsonnetSsmFuncOffline())
+		vm.NativeFunction(jsonnetSsmListFuncOffline())
 		for _, f := range jsonnetTfstateFuncsOffline() {
 			vm.NativeFunction(f)
 		}
 	} else {
 		vm.NativeFunction(jsonnetMustEnvFunc())
-		vm.NativeFunction(jsonnetSsmFunc(ctx))
+		helper := newSSMHelper(ctx)
+		vm.NativeFunction(jsonnetSsmFunc(helper))
+		vm.NativeFunction(jsonnetSsmListFunc(helper))
 		for _, f := range jsonnetTfstateFuncs(ctx) {
 			vm.NativeFunction(f)
 		}
@@ -837,11 +840,10 @@ func jsonnetMustEnvFunc() *jsonnet.NativeFunction {
 }
 
 // jsonnetSsmFunc registers `ssm(name)`: SSM Parameter Store value,
-// decrypted; mirrors the {{ ssm "/path" }} template func. Lazy-init
-// the SSM client per VM so calls without ssm references don't pay the
-// AWS-config-load cost.
-func jsonnetSsmFunc(ctx context.Context) *jsonnet.NativeFunction {
-	var client *ssm.Client
+// decrypted; mirrors the {{ ssm "/path" }} template func. Shares the
+// per-VM cache with `ssmList` so multiple references to the same key
+// only hit AWS once.
+func jsonnetSsmFunc(h *ssmHelper) *jsonnet.NativeFunction {
 	return &jsonnet.NativeFunction{
 		Name:   "ssm",
 		Params: []ast.Identifier{"name"},
@@ -850,20 +852,34 @@ func jsonnetSsmFunc(ctx context.Context) *jsonnet.NativeFunction {
 			if !ok || name == "" {
 				return nil, fmt.Errorf("ssm: name must be a non-empty string")
 			}
-			if client == nil {
-				cfg, err := awsconfig.LoadDefaultConfig(ctx)
-				if err != nil {
-					return nil, fmt.Errorf("ssm: AWS config: %w", err)
-				}
-				client = ssm.NewFromConfig(cfg)
+			return h.get(name)
+		},
+	}
+}
+
+// jsonnetSsmListFunc registers `ssmList(name)`: SSM Parameter Store value
+// split on commas, returned as a jsonnet array. Cleaner than indexing
+// against a CSV string; for one-off element access write
+// `std.native('ssmList')(name)[idx]`. A non-StringList parameter comes
+// back as a one-element array, which keeps caller iteration uniform.
+func jsonnetSsmListFunc(h *ssmHelper) *jsonnet.NativeFunction {
+	return &jsonnet.NativeFunction{
+		Name:   "ssmList",
+		Params: []ast.Identifier{"name"},
+		Func: func(args []any) (any, error) {
+			name, ok := args[0].(string)
+			if !ok || name == "" {
+				return nil, fmt.Errorf("ssmList: name must be a non-empty string")
 			}
-			out, err := client.GetParameter(ctx, &ssm.GetParameterInput{
-				Name: aws.String(name), WithDecryption: aws.Bool(true),
-			})
+			parts, err := h.list(name)
 			if err != nil {
-				return nil, fmt.Errorf("ssm:%s: %w", name, err)
+				return nil, err
 			}
-			return aws.ToString(out.Parameter.Value), nil
+			out := make([]any, len(parts))
+			for i, p := range parts {
+				out[i] = p
+			}
+			return out, nil
 		},
 	}
 }
@@ -922,6 +938,25 @@ func jsonnetMustEnvFuncOffline() *jsonnet.NativeFunction {
 				return v, nil
 			}
 			return "<env:" + name + ">", nil
+		},
+	}
+}
+
+// jsonnetSsmListFuncOffline returns a one-element array containing the
+// `<ssm:/path>` placeholder, so configs that drive subnet / security
+// group lists from StringList parameters still validate without hitting
+// AWS. Validate downstream is permissive enough that one placeholder
+// satisfies the per-element check.
+func jsonnetSsmListFuncOffline() *jsonnet.NativeFunction {
+	return &jsonnet.NativeFunction{
+		Name:   "ssmList",
+		Params: []ast.Identifier{"name"},
+		Func: func(args []any) (any, error) {
+			name, ok := args[0].(string)
+			if !ok || name == "" {
+				return nil, fmt.Errorf("ssmList: name must be a non-empty string")
+			}
+			return []any{"<ssm:" + name + ">"}, nil
 		},
 	}
 }
@@ -1101,27 +1136,83 @@ func resolveBaseFile(c *Config, funcs template.FuncMap, visited map[string]bool)
 	return nil
 }
 
+// ssmHelper bundles a per-load SSM client + value cache so a single
+// loadConfigs / evalJsonnet pass calls GetParameter at most once per
+// distinct parameter name, even when the same key is referenced from
+// multiple template / jsonnet sites. Mirrors the cache fujiwara/ssm-lookup
+// uses for ecschedule's plugin path.
+type ssmHelper struct {
+	ctx    context.Context
+	client *ssm.Client
+	cache  map[string]string
+}
+
+func newSSMHelper(ctx context.Context) *ssmHelper {
+	return &ssmHelper{ctx: ctx, cache: map[string]string{}}
+}
+
+// get returns the raw Parameter.Value for name (decrypted), caching by
+// name. The Type is not inspected — both String and StringList come back
+// as the SDK's stringly value, with comma separators preserved for the
+// caller to split.
+func (h *ssmHelper) get(name string) (string, error) {
+	if v, ok := h.cache[name]; ok {
+		return v, nil
+	}
+	if h.client == nil {
+		cfg, err := awsconfig.LoadDefaultConfig(h.ctx)
+		if err != nil {
+			return "", err
+		}
+		h.client = ssm.NewFromConfig(cfg)
+	}
+	out, err := h.client.GetParameter(h.ctx, &ssm.GetParameterInput{
+		Name: aws.String(name), WithDecryption: aws.Bool(true),
+	})
+	if err != nil {
+		return "", fmt.Errorf("ssm:%s: %w", name, err)
+	}
+	v := aws.ToString(out.Parameter.Value)
+	h.cache[name] = v
+	return v, nil
+}
+
+// list returns the parameter value as a slice of strings, splitting on
+// comma — the SSM StringList separator. A non-StringList value comes
+// back as a single-element slice, which keeps the caller's iteration /
+// indexing code uniform.
+func (h *ssmHelper) list(name string) ([]string, error) {
+	v, err := h.get(name)
+	if err != nil {
+		return nil, err
+	}
+	return strings.Split(v, ","), nil
+}
+
 // runtimeFuncs returns the FuncMap used by dump/diff/apply. Hits AWS for SSM
 // and errors loudly if must_env is unset. Each call returns a fresh closure
 // that owns its own lazily-constructed *ssm.Client, so test runs don't share
 // state and there's no package-level singleton.
 func runtimeFuncs() template.FuncMap {
-	var client *ssm.Client
-	ssmFetch := func(name string) (string, error) {
-		if client == nil {
-			cfg, err := awsconfig.LoadDefaultConfig(context.Background())
-			if err != nil {
-				return "", err
-			}
-			client = ssm.NewFromConfig(cfg)
-		}
-		out, err := client.GetParameter(context.Background(), &ssm.GetParameterInput{
-			Name: aws.String(name), WithDecryption: aws.Bool(true),
-		})
+	helper := newSSMHelper(context.Background())
+	// ssm matches ecschedule's signature: `{{ ssm "key" }}` returns the raw
+	// value (CSV for StringList), `{{ ssm "key" idx }}` returns the idx-th
+	// element of the StringList. Out-of-range indices error loudly with
+	// the parameter name + observed length.
+	ssmFn := func(name string, index ...int) (string, error) {
+		v, err := helper.get(name)
 		if err != nil {
-			return "", fmt.Errorf("ssm:%s: %w", name, err)
+			return "", err
 		}
-		return aws.ToString(out.Parameter.Value), nil
+		if len(index) == 0 {
+			return v, nil
+		}
+		parts := strings.Split(v, ",")
+		i := index[0]
+		if i < 0 || i >= len(parts) {
+			return "", fmt.Errorf("ssm:%s: index %d out of range (len=%d)", name, i, len(parts))
+		}
+		return parts[i], nil
 	}
 	funcs := template.FuncMap{
 		"env": os.Getenv,
@@ -1132,7 +1223,7 @@ func runtimeFuncs() template.FuncMap {
 			}
 			return v, nil
 		},
-		"ssm": ssmFetch,
+		"ssm": ssmFn,
 	}
 	addTfstateFuncs(funcs, os.Getenv(envTfstateURL))
 	return funcs
@@ -1170,7 +1261,12 @@ func validateFuncs() template.FuncMap {
 			}
 			return "<env:" + name + ">"
 		},
-		"ssm":      func(name string) string { return "<ssm:" + name + ">" },
+		"ssm": func(name string, index ...int) string {
+			if len(index) > 0 {
+				return fmt.Sprintf("<ssm:%s[%d]>", name, index[0])
+			}
+			return "<ssm:" + name + ">"
+		},
 		"tfstate":  func(name string) string { return "<tfstate:" + name + ">" },
 		"tfstatef": func(name string, args ...any) string { return "<tfstate:" + name + ">" },
 	}

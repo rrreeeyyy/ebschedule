@@ -850,6 +850,43 @@ func TestJsonnetConfigLoad(t *testing.T) {
 		}
 	})
 
+	t.Run("ssmList returns 1-element placeholder under validate (offline)", func(t *testing.T) {
+		dir := t.TempDir()
+		p := filepath.Join(dir, "conf.jsonnet")
+		body := `{
+  region: "ap-northeast-1",
+  trackingId: "x",
+  rules: [{
+    name: "etl",
+    scheduleExpression: "rate(1 hour)",
+    targets: [{
+      id: "ecs",
+      arn: "arn:aws:ecs:ap-northeast-1:1:cluster/c",
+      ecsParameters: {
+        taskDefinitionArn: "arn:aws:ecs:ap-northeast-1:1:task-definition/td:1",
+        launchType: "FARGATE",
+        // ssmList drives the subnet array; under offline it's a 1-element
+        // placeholder array, which the per-element ARN-or-placeholder
+        // check accepts.
+        subnets: std.native("ssmList")("/ebs/test/subnets"),
+      },
+    }],
+  }],
+}
+`
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfgs, err := loadConfigsWithFuncs(p, validateFuncs(), true)
+		if err != nil {
+			t.Fatalf("offline ssmList jsonnet load should not fail: %v", err)
+		}
+		got := cfgs[0].Rules[0].Targets[0].EcsParameters.Subnets
+		if len(got) != 1 || got[0] != "<ssm:/ebs/test/subnets>" {
+			t.Errorf("expected single placeholder, got %v", got)
+		}
+	})
+
 	t.Run("ssm returns <ssm:name> placeholder under validate (offline)", func(t *testing.T) {
 		dir := t.TempDir()
 		p := filepath.Join(dir, "conf.jsonnet")
@@ -1051,6 +1088,16 @@ func TestExpandTemplate(t *testing.T) {
 		}
 		if string(out) != `x: <ssm:/p/k>` {
 			t.Errorf("ssm placeholder mismatch: %q", out)
+		}
+	})
+	t.Run("validate ssm with index emits indexed placeholder", func(t *testing.T) {
+		raw := []byte(`x: {{ ssm "/list" 2 }}`)
+		out, err := expandTemplate(raw, validateFuncs())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(out) != `x: <ssm:/list[2]>` {
+			t.Errorf("ssm[idx] placeholder mismatch: %q", out)
 		}
 	})
 	t.Run("syntax error surfaces", func(t *testing.T) {
