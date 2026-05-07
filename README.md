@@ -37,8 +37,6 @@ jobs:
           version: v0.1.0          # or "latest" (default)
       - run: ebschedule -conf config/ -prune apply
         env:
-          # Account ID isn't a secret (it's visible in every IAM ARN);
-          # store it as a workflow / repo / org variable, not a secret.
           AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
 ```
 
@@ -71,9 +69,8 @@ ebschedule -conf ebschedule.yaml -prune apply
 ebschedule -conf 'config/*.yaml' -prune apply
 ```
 
-Note: flags must precede the subcommand (Go's `flag` stops parsing at
-the first non-flag arg). `-prune apply` works; `apply -prune` silently
-drops the flag.
+Note: flags must precede the subcommand. `-prune apply` works;
+`apply -prune` silently drops the flag.
 
 See [`ebschedule.yaml`](./ebschedule.yaml) for an example covering both
 Rules and Schedules.
@@ -295,14 +292,12 @@ config can be written in either format:
 | `std.native('ssm')(name)` | `{{ ssm "/path" }}` |
 | `std.native('tfstate')(resource)` | `{{ tfstate "type.name.attr" }}` |
 
-`std.extVar` is left for explicit user-supplied values (no automatic
-process-env dump, so the jsonnet sandbox doesn't see anything you
-didn't ask for). Local imports (`import './lib.libsonnet'`) resolve
-relative to the file.
+`std.extVar` is left for explicit user-supplied values. Local imports
+(`import './lib.libsonnet'`) resolve relative to the file.
 
 Text/template (`env` / `must_env` / `ssm` / `tfstate`) is **not**
 applied to jsonnet input — jsonnet has its own machinery via the
-natives above, and mixing both would invite confusion.
+natives above.
 
 See [examples/11-jsonnet/](./examples/11-jsonnet).
 
@@ -436,9 +431,8 @@ AWS, so the bootstrap call doesn't need any config-shaped scaffolding.
 - run: ebschedule -conf 'config/*.yaml' diff
 ```
 
-When `apply` is part of CI, pass `-auto-approve` (the interactive
-prompt is suppressed automatically when stdin isn't a TTY, but being
-explicit avoids surprises in shells that fake one):
+When `apply` is part of CI, pass `-auto-approve` to skip the
+interactive confirmation:
 
 ```yaml
 - run: ebschedule -conf 'config/*.yaml' -auto-approve apply
@@ -457,9 +451,8 @@ ebschedule -conf my-app.yaml \
   apply
 ```
 
-`-target` and `-prune` are mutually exclusive (partial-target +
-whole-config sweep would be incoherent). Naming a resource the config
-doesn't define errors out rather than silently skipping.
+`-target` and `-prune` are mutually exclusive. Naming a resource the
+config doesn't define errors out rather than silently skipping.
 
 ### Running a rule on demand
 
