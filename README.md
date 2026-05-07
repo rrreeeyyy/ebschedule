@@ -39,7 +39,7 @@ jobs:
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ap-northeast-1
-      - uses: rrreeeyyy/ebschedule@v1
+      - uses: rrreeeyyy/ebschedule@v0.1.0
         with:
           version: v0.1.0          # or "latest" (default)
       - run: ebschedule -conf 'config/*.yaml' -auto-approve -prune apply
