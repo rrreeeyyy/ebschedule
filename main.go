@@ -1,20 +1,21 @@
-// ebschedule: a small declarative CLI for managing Amazon EventBridge Rules and
-// EventBridge Scheduler Schedules in a single config file.
+// ebschedule: a small declarative CLI for managing Amazon EventBridge Rules
+// and EventBridge Scheduler Schedules from a single YAML (or jsonnet)
+// config file.
 //
-//	ebschedule [-conf FILE_OR_GLOB] [-dry-run] [-prune] <dump|diff|apply> [name-prefix]
+//	ebschedule [-conf FILE_OR_GLOB] [-dry-run] [-prune] [-auto-approve] [-target KIND:NAME]... <dump|diff|apply|validate> [name-prefix]
+//	ebschedule [-conf FILE_OR_GLOB] [-dry-run] run -rule NAME
+//	ebschedule import-ecschedule [-in FILE] [-account NUM] [-region REGION] [-tracking-id ID]
 //
-// Config files are run through text/template before YAML parsing. Funcs:
+// Config files run through text/template (YAML) or go-jsonnet (.jsonnet /
+// .libsonnet) before parsing. Available helpers:
 //
-//	{{ env "X" }}         empty if X is unset
-//	{{ must_env "X" }}    errors if X is unset
-//	{{ ssm "/p/k" }}      SSM Parameter Store value (decrypted)
+//	env / must_env / ssm / tfstate / tfstatef
 package main
 
 import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -27,26 +28,10 @@ import (
 	"strings"
 	"syscall"
 	"text/template"
-	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	awsconfig "github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/service/sts"
-	"github.com/pmezard/go-difflib/difflib"
 	"golang.org/x/term"
 	"gopkg.in/yaml.v3"
 )
-
-// trackingTagKey marks resources managed by ebschedule. -prune only deletes
-// resources carrying this tag with the trackingId from the same config.
-const trackingTagKey = "ebschedule-tracking-id"
-
-// envTfstateURL is the env var that points runtimeFuncs at a Terraform
-// state file (local path, file://, s3://, http://, etc.). When set, the
-// `tfstate` template func becomes available. When unset, calling
-// {{ tfstate ... }} errors loudly so missing-URL isn't confused with a
-// missing tfstate value.
-const envTfstateURL = "EBSCHEDULE_TFSTATE_URL"
 
 // version is set via ldflags at release time (see .goreleaser.yaml).
 // "dev" is the default for local builds.
@@ -103,166 +88,6 @@ func (c *Config) group() string {
 		return c.GroupName
 	}
 	return "default"
-}
-
-// --- shared "small" types --------------------------------------------------
-
-// RetryPolicy is identical between EventBridge Rules and Scheduler Schedules.
-type RetryPolicy struct {
-	MaximumRetryAttempts     int32 `yaml:"maximumRetryAttempts"`
-	MaximumEventAgeInSeconds int32 `yaml:"maximumEventAgeInSeconds"`
-}
-
-// DeadLetterConfig is identical between Rules and Schedules.
-type DeadLetterConfig struct {
-	Arn string `yaml:"arn"`
-}
-
-// SqsParameters carries the FIFO MessageGroupId for an SQS target. Used by
-// both EventBridge Rules and Scheduler Schedules.
-type SqsParameters struct {
-	MessageGroupId string `yaml:"messageGroupId,omitempty"`
-}
-
-// CapacityProviderStrategyItem maps to ebtypes / schtypes
-// CapacityProviderStrategyItem. Mutually exclusive with launchType in the
-// AWS API; that constraint is enforced in validate.go.
-type CapacityProviderStrategyItem struct {
-	CapacityProvider string `yaml:"capacityProvider"`
-	Base             int32  `yaml:"base,omitempty"`
-	Weight           int32  `yaml:"weight,omitempty"`
-}
-
-// PlacementConstraint matches the AWS ECS placement-constraint shape
-// (e.g. distinctInstance / memberOf with a Cluster Query Language
-// expression). Same shape on Rule and Schedule SDKs.
-type PlacementConstraint struct {
-	Type       string `yaml:"type"` // distinctInstance | memberOf
-	Expression string `yaml:"expression,omitempty"`
-}
-
-// PlacementStrategy matches the AWS ECS placement-strategy shape
-// (random / spread / binpack with an optional field like
-// "attribute:ecs.availability-zone").
-type PlacementStrategy struct {
-	Type  string `yaml:"type"` // random | spread | binpack
-	Field string `yaml:"field,omitempty"`
-}
-
-// KeyValuePair holds a Name / Value pair, used for ECS RunTask Tags
-// passed through to the launched task.
-type KeyValuePair struct {
-	Name  string `yaml:"name"`
-	Value string `yaml:"value,omitempty"`
-}
-
-// jsonField holds a JSON document. The YAML representation can be either a
-// scalar string (legacy / explicit JSON) or a structured mapping/sequence
-// (preferred — the YAML reader auto-converts to JSON on load). Internally
-// the value is always stored as canonical JSON (compact, sorted keys) so
-// that diff comparison is whitespace-insensitive between user input and
-// AWS-returned strings.
-//
-// On marshal, a stored canonical JSON string is decoded back into a Go
-// value and emitted as structured YAML, so dump output and import-ecschedule
-// output are readable rather than embedded JSON-in-YAML.
-type jsonField string
-
-// canonicalizeJSON normalizes a JSON byte string to compact form with sorted
-// map keys. Returns the empty string for empty input.
-func canonicalizeJSON(b []byte) (string, error) {
-	if len(bytes.TrimSpace(b)) == 0 {
-		return "", nil
-	}
-	var v any
-	if err := json.Unmarshal(b, &v); err != nil {
-		return "", err
-	}
-	out, err := json.Marshal(v) // json.Marshal sorts map keys by default
-	if err != nil {
-		return "", err
-	}
-	return string(out), nil
-}
-
-func (j *jsonField) UnmarshalYAML(node *yaml.Node) error {
-	switch node.Kind {
-	case yaml.ScalarNode:
-		if node.Value == "" {
-			*j = ""
-			return nil
-		}
-		canon, err := canonicalizeJSON([]byte(node.Value))
-		if err != nil {
-			// Not valid JSON; keep the original so validation can flag it.
-			*j = jsonField(node.Value)
-			return nil
-		}
-		*j = jsonField(canon)
-		return nil
-	case yaml.MappingNode, yaml.SequenceNode:
-		var v any
-		if err := node.Decode(&v); err != nil {
-			return err
-		}
-		b, err := json.Marshal(v)
-		if err != nil {
-			return err
-		}
-		canon, err := canonicalizeJSON(b)
-		if err != nil {
-			return err
-		}
-		*j = jsonField(canon)
-		return nil
-	case yaml.AliasNode:
-		return j.UnmarshalYAML(node.Alias)
-	default:
-		// Null / document nodes: treat as empty.
-		*j = ""
-		return nil
-	}
-}
-
-// jsonFieldFromAWS wraps a JSON string returned by AWS, canonicalizing it
-// so diff comparison stays whitespace-insensitive. Empty input yields the
-// empty jsonField; invalid JSON is stored verbatim so validate can flag it.
-func jsonFieldFromAWS(s string) jsonField {
-	if s == "" {
-		return ""
-	}
-	canon, err := canonicalizeJSON([]byte(s))
-	if err != nil {
-		return jsonField(s)
-	}
-	return jsonField(canon)
-}
-
-func (j jsonField) MarshalYAML() (any, error) {
-	if j == "" {
-		return "", nil
-	}
-	var v any
-	if err := json.Unmarshal([]byte(j), &v); err == nil {
-		return v, nil
-	}
-	// Stored value isn't valid JSON (only happens via the
-	// canonicalization-failure fallback in UnmarshalYAML); emit verbatim
-	// so validate can still surface the parse error to the user.
-	return string(j), nil
-}
-
-// SageMakerPipelineParameters supplies pipeline parameters when invoking a
-// SageMaker pipeline as a target. Same shape on Rules and Schedules.
-type SageMakerPipelineParameters struct {
-	PipelineParameterList []SageMakerPipelineParameter `yaml:"pipelineParameterList,omitempty"`
-}
-
-// SageMakerPipelineParameter is one (Name, Value) pair in
-// SageMakerPipelineParameters.PipelineParameterList.
-type SageMakerPipelineParameter struct {
-	Name  string `yaml:"name"`
-	Value string `yaml:"value"`
 }
 
 // --- main ------------------------------------------------------------------
@@ -547,72 +372,6 @@ Exit codes:
 	}
 }
 
-// stsAccountResolver fetches the calling account ID via sts:GetCallerIdentity.
-// It's a package-level variable so tests can swap a fake without standing up
-// a real AWS client. The default uses the SDK's region-default chain because
-// GetCallerIdentity is a global call — the region argument is irrelevant.
-var stsAccountResolver = func(ctx context.Context) (string, error) {
-	awsCfg, err := loadAWS(ctx, "")
-	if err != nil {
-		return "", err
-	}
-	cli := sts.NewFromConfig(awsCfg)
-	out, err := cli.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
-	if err != nil {
-		return "", err
-	}
-	return aws.ToString(out.Account), nil
-}
-
-// autoResolveAccountEnv populates AWS_ACCOUNT_ID from sts:GetCallerIdentity
-// when the env var is empty. Online subcommands (diff/apply/dump/run) call
-// this before loadConfigs so configs that omit a top-level `account:` (the
-// common ecschedule shape) still resolve ARN shorthand correctly.
-//
-// On STS failure we leave the env var unset and continue silently:
-// expandShortcuts surfaces a clear "shorthand requires account" error if the
-// value is actually needed, and the upcoming preflightCheck will report any
-// real credential problem with full context. Calling it from validate /
-// import-ecschedule would defeat the offline guarantee, so they don't.
-func autoResolveAccountEnv(ctx context.Context) {
-	if os.Getenv("AWS_ACCOUNT_ID") != "" {
-		return
-	}
-	id, err := stsAccountResolver(ctx)
-	if err != nil || id == "" {
-		return
-	}
-	_ = os.Setenv("AWS_ACCOUNT_ID", id)
-}
-
-// preflightCheck verifies AWS credentials by calling sts:GetCallerIdentity
-// once per region present in cfgs (deduplicated). It runs before any
-// mutation so an apply doesn't get half-way then trip on expired SSO.
-// Errors here are surfaced with the AWS error wrapped so the user sees
-// the underlying cause directly.
-func preflightCheck(ctx context.Context, cfgs []*Config) error {
-	seen := map[string]bool{}
-	regions := []string{}
-	for _, c := range cfgs {
-		if seen[c.Region] {
-			continue
-		}
-		seen[c.Region] = true
-		regions = append(regions, c.Region)
-	}
-	for _, region := range regions {
-		awsCfg, err := loadAWS(ctx, region)
-		if err != nil {
-			return fmt.Errorf("AWS credentials (region=%q): %w", region, err)
-		}
-		cli := sts.NewFromConfig(awsCfg)
-		if _, err := cli.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{}); err != nil {
-			return fmt.Errorf("sts:GetCallerIdentity (region=%q): %w", region, err)
-		}
-	}
-	return nil
-}
-
 // applySummary prints a one-line summary to stderr when a multi-file apply
 // fails partway through. With a single config or zero applied so far there's
 // nothing useful to say, so it stays silent.
@@ -647,7 +406,7 @@ func confirmApply(prompt io.Writer, in io.Reader) bool {
 func check(err error) {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(1)
+		os.Exit(exitErr)
 	}
 }
 
@@ -875,71 +634,4 @@ func resolveBaseFile(c *Config, funcs template.FuncMap, visited map[string]bool)
 		c.Tags = merged
 	}
 	return nil
-}
-
-func loadAWS(ctx context.Context, region string) (aws.Config, error) {
-	opts := []func(*awsconfig.LoadOptions) error{}
-	if region != "" {
-		opts = append(opts, awsconfig.WithRegion(region))
-	}
-	return awsconfig.LoadDefaultConfig(ctx, opts...)
-}
-
-// --- diff helpers ----------------------------------------------------------
-
-// mustYAML encodes v to a 2-space-indented YAML string. Panics on error,
-// since v is always an in-memory struct we control and yaml.Encoder writes
-// to a bytes.Buffer that can't fail; an error here would mean a programming
-// bug (e.g. an unmarshalable type) we want surfaced loudly rather than
-// silently producing an empty diff.
-func mustYAML(v any) string {
-	var buf bytes.Buffer
-	enc := yaml.NewEncoder(&buf)
-	enc.SetIndent(2)
-	if err := enc.Encode(v); err != nil {
-		panic(fmt.Errorf("mustYAML encode: %w", err))
-	}
-	if err := enc.Close(); err != nil {
-		panic(fmt.Errorf("mustYAML close: %w", err))
-	}
-	return buf.String()
-}
-
-func unifiedDiff(name, current, desired string) string {
-	d := difflib.UnifiedDiff{
-		A:        difflib.SplitLines(current),
-		B:        difflib.SplitLines(desired),
-		FromFile: name + " (current)",
-		ToFile:   name + " (desired)",
-		Context:  3,
-	}
-	s, _ := difflib.GetUnifiedDiffString(d)
-	return s
-}
-
-// --- time helpers ----------------------------------------------------------
-
-func parseTime(s string) (*time.Time, error) {
-	if s == "" {
-		return nil, nil
-	}
-	t, err := time.Parse(time.RFC3339, s)
-	if err != nil {
-		return nil, fmt.Errorf("invalid RFC3339 time %q: %w", s, err)
-	}
-	return &t, nil
-}
-
-func formatTime(t *time.Time) string {
-	if t == nil {
-		return ""
-	}
-	return t.UTC().Format(time.RFC3339)
-}
-
-func nilIfEmpty(s string) *string {
-	if s == "" {
-		return nil
-	}
-	return aws.String(s)
 }

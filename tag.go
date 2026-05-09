@@ -5,6 +5,10 @@ import (
 	"sort"
 )
 
+// trackingTagKey marks resources managed by ebschedule. -prune only deletes
+// resources carrying this tag with the trackingId from the same config.
+const trackingTagKey = "ebschedule-tracking-id"
+
 // mergeTags returns a new map containing base ∪ override; override wins on
 // conflict. Returns nil when both inputs are empty so YAML round-trips
 // don't show a stray empty-map key.

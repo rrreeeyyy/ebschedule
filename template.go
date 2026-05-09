@@ -15,6 +15,13 @@ import (
 	"github.com/fujiwara/tfstate-lookup/tfstate"
 )
 
+// envTfstateURL points runtimeFuncs at a Terraform state file (local
+// path, file://, s3://, http://, etc.). When set, the `tfstate`
+// template func and `std.native('tfstate')` jsonnet native become
+// available; when unset they error loudly so missing-URL isn't
+// confused with a missing tfstate value.
+const envTfstateURL = "EBSCHEDULE_TFSTATE_URL"
+
 // ssmHelper bundles a per-load SSM client + value cache so a single
 // loadConfigs / evalJsonnet pass calls GetParameter at most once per
 // distinct parameter name, even when the same key is referenced from
