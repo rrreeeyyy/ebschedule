@@ -26,9 +26,12 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sfn"
 )
 
+// --- API interfaces -------------------------------------------------------
+//
 // Per-service subsets used by the run subcommand. Defining them here lets
 // tests inject fakes; the real *ecs.Client / *lambda.Client / etc. all
 // implement these implicitly.
+
 type ecsRunAPI interface {
 	RunTask(ctx context.Context, in *ecs.RunTaskInput, optFns ...func(*ecs.Options)) (*ecs.RunTaskOutput, error)
 }
@@ -64,6 +67,8 @@ type sagemakerStartAPI interface {
 type redshiftDataAPI interface {
 	ExecuteStatement(ctx context.Context, in *redshiftdata.ExecuteStatementInput, optFns ...func(*redshiftdata.Options)) (*redshiftdata.ExecuteStatementOutput, error)
 }
+
+// --- client bundle + classification --------------------------------------
 
 // runClients bundles the per-service AWS clients run dispatches to. Tests
 // pass fakes; production wiring constructs real ones in newRunClients.
@@ -141,6 +146,58 @@ func findRule(cfgs []*Config, name string) (*Config, *Rule, error) {
 	return nil, nil, fmt.Errorf("rule %q not found (available: %s)", name, strings.Join(names, ", "))
 }
 
+// --- subcommand entry / dispatch -----------------------------------------
+
+// runRunSubcommand parses `ebschedule run -rule NAME [-dry-run]` and
+// dispatches the named rule. We honor both the global -dry-run (set on
+// the top-level flag.FlagSet) and a subcommand-local one for ecschedule
+// CLI compatibility — `ecschedule run -rule X -dry-run` should keep
+// working unchanged.
+func runRunSubcommand(ctx context.Context, out io.Writer, confPath string, globalDryRun bool, args []string) error {
+	fs := flag.NewFlagSet("run", flag.ContinueOnError)
+	fs.SetOutput(io.Discard) // surface our own usage on parse failure
+	var (
+		ruleName string
+		localDry bool
+	)
+	fs.StringVar(&ruleName, "rule", "", "rule name to run (required)")
+	fs.BoolVar(&localDry, "dry-run", false, "print what would be invoked without calling AWS")
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("run: %w", err)
+	}
+	if ruleName == "" {
+		return errors.New("run: -rule NAME is required")
+	}
+	dryRun := globalDryRun || localDry
+
+	autoResolveAccountEnv(ctx)
+	cfgs, err := loadConfigs(confPath)
+	if err != nil {
+		return err
+	}
+	cfg, rule, err := findRule(cfgs, ruleName)
+	if err != nil {
+		return err
+	}
+	if !dryRun {
+		// run only mutates AWS when not in dry-run, so mirror apply's
+		// pre-flight gate (catches expired SSO before we issue the call).
+		if err := preflightCheck(ctx, []*Config{cfg}); err != nil {
+			return fmt.Errorf("pre-flight: %w", err)
+		}
+	}
+	cli, err := newRunClients(ctx, cfg.Region)
+	if err != nil {
+		return fmt.Errorf("AWS clients: %w", err)
+	}
+	suffix := ""
+	if dryRun {
+		suffix = " (dry-run)"
+	}
+	fmt.Fprintf(out, "running rule %q%s\n", rule.Name, suffix)
+	return runRule(ctx, out, cli, rule, dryRun)
+}
+
 // runRule dispatches every target on the rule. Stops on the first failure
 // so an erroring target doesn't get masked by later success output.
 func runRule(ctx context.Context, out io.Writer, cli *runClients, r *Rule, dryRun bool) error {
@@ -182,6 +239,91 @@ func runTarget(ctx context.Context, out io.Writer, cli *runClients, r *Rule, t *
 	default:
 		return fmt.Errorf("run: classifier returned unknown kind for target %q", t.ID)
 	}
+}
+
+// --- ECS dispatch --------------------------------------------------------
+
+// ecsOverrideEnvelope mirrors the JSON shape that EventBridge's ECS
+// RunTask integration accepts on a target's Input field. ecschedule
+// emits this exact shape, and import-ecschedule writes it on conversion.
+type ecsOverrideEnvelope struct {
+	ContainerOverrides []ecsOverrideContainer `json:"containerOverrides,omitempty"`
+	TaskOverride       *ecsOverrideTask       `json:"taskOverride,omitempty"`
+}
+
+type ecsOverrideContainer struct {
+	Name              string             `json:"name"`
+	Command           []string           `json:"command,omitempty"`
+	Environment       []ecsOverrideEnvKV `json:"environment,omitempty"`
+	Cpu               *int32             `json:"cpu,omitempty"`
+	Memory            *int32             `json:"memory,omitempty"`
+	MemoryReservation *int32             `json:"memoryReservation,omitempty"`
+}
+
+type ecsOverrideEnvKV struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+type ecsOverrideTask struct {
+	Cpu    string `json:"cpu,omitempty"`
+	Memory string `json:"memory,omitempty"`
+}
+
+// parseECSOverrides reads target.Input as an ECS override envelope and
+// translates it into a TaskOverride for ecs:RunTask. Returns (nil, nil)
+// when the input is empty or carries no override fields, so the caller
+// can branch cleanly. Unknown top-level keys are tolerated — the goal
+// is round-tripping ecschedule-shaped input, not strict validation.
+func parseECSOverrides(input jsonField) (*ecstypes.TaskOverride, error) {
+	s := strings.TrimSpace(string(input))
+	if s == "" {
+		return nil, nil
+	}
+	var env ecsOverrideEnvelope
+	if err := json.Unmarshal([]byte(s), &env); err != nil {
+		return nil, fmt.Errorf("input is not valid JSON: %w", err)
+	}
+	if len(env.ContainerOverrides) == 0 && env.TaskOverride == nil {
+		return nil, nil
+	}
+	to := &ecstypes.TaskOverride{}
+	for _, co := range env.ContainerOverrides {
+		c := ecstypes.ContainerOverride{
+			Name:              aws.String(co.Name),
+			Command:           co.Command,
+			Cpu:               co.Cpu,
+			Memory:            co.Memory,
+			MemoryReservation: co.MemoryReservation,
+		}
+		for _, e := range co.Environment {
+			c.Environment = append(c.Environment, ecstypes.KeyValuePair{
+				Name:  aws.String(e.Name),
+				Value: aws.String(e.Value),
+			})
+		}
+		to.ContainerOverrides = append(to.ContainerOverrides, c)
+	}
+	if env.TaskOverride != nil {
+		if env.TaskOverride.Cpu != "" {
+			to.Cpu = aws.String(env.TaskOverride.Cpu)
+		}
+		if env.TaskOverride.Memory != "" {
+			to.Memory = aws.String(env.TaskOverride.Memory)
+		}
+	}
+	return to, nil
+}
+
+// ecsRunTaskCount returns the count to pass to RunTask. EventBridge's
+// taskCount defaults to 1 (the AWS default we strip on read), so when the
+// stored value is 0 we reapply the default rather than asking AWS to run
+// zero tasks.
+func ecsRunTaskCount(ep *RuleEcsParameters) int32 {
+	if ep.TaskCount <= 0 {
+		return 1
+	}
+	return ep.TaskCount
 }
 
 // runECSTarget calls ecs:RunTask using ecsParameters straight from the
@@ -286,15 +428,24 @@ func runECSTarget(ctx context.Context, out io.Writer, cli ecsRunAPI, t *Target, 
 	return nil
 }
 
-// ecsRunTaskCount returns the count to pass to RunTask. EventBridge's
-// taskCount defaults to 1 (the AWS default we strip on read), so when the
-// stored value is 0 we reapply the default rather than asking AWS to run
-// zero tasks.
-func ecsRunTaskCount(ep *RuleEcsParameters) int32 {
-	if ep.TaskCount <= 0 {
-		return 1
+// --- Lambda + SFN dispatch -----------------------------------------------
+
+// payloadFromInput renders a target.Input value as raw JSON bytes. Empty
+// input becomes "{}" so callers can pass it straight to AWS without an
+// extra nil check; canonicalization in jsonField guarantees valid JSON.
+func payloadFromInput(input jsonField) []byte {
+	s := strings.TrimSpace(string(input))
+	if s == "" {
+		return []byte("{}")
 	}
-	return ep.TaskCount
+	// Sanity-check: the field went through canonicalizeJSON on load, but if
+	// a caller hand-built a Target without that path we still want to bail
+	// rather than ship garbage to AWS.
+	var v json.RawMessage
+	if err := json.Unmarshal([]byte(s), &v); err != nil {
+		return []byte("{}")
+	}
+	return []byte(s)
 }
 
 // runLambdaTarget calls lambda:Invoke with target.Input as the payload
@@ -355,115 +506,7 @@ func runSFNTarget(ctx context.Context, out io.Writer, cli sfnStartAPI, r *Rule, 
 	return nil
 }
 
-// ecsOverrideEnvelope mirrors the JSON shape that EventBridge's ECS
-// RunTask integration accepts on a target's Input field. ecschedule
-// emits this exact shape, and import-ecschedule writes it on conversion.
-type ecsOverrideEnvelope struct {
-	ContainerOverrides []ecsOverrideContainer `json:"containerOverrides,omitempty"`
-	TaskOverride       *ecsOverrideTask       `json:"taskOverride,omitempty"`
-}
-
-type ecsOverrideContainer struct {
-	Name              string             `json:"name"`
-	Command           []string           `json:"command,omitempty"`
-	Environment       []ecsOverrideEnvKV `json:"environment,omitempty"`
-	Cpu               *int32             `json:"cpu,omitempty"`
-	Memory            *int32             `json:"memory,omitempty"`
-	MemoryReservation *int32             `json:"memoryReservation,omitempty"`
-}
-
-type ecsOverrideEnvKV struct {
-	Name  string `json:"name"`
-	Value string `json:"value"`
-}
-
-type ecsOverrideTask struct {
-	Cpu    string `json:"cpu,omitempty"`
-	Memory string `json:"memory,omitempty"`
-}
-
-// parseECSOverrides reads target.Input as an ECS override envelope and
-// translates it into a TaskOverride for ecs:RunTask. Returns (nil, nil)
-// when the input is empty or carries no override fields, so the caller
-// can branch cleanly. Unknown top-level keys are tolerated — the goal
-// is round-tripping ecschedule-shaped input, not strict validation.
-func parseECSOverrides(input jsonField) (*ecstypes.TaskOverride, error) {
-	s := strings.TrimSpace(string(input))
-	if s == "" {
-		return nil, nil
-	}
-	var env ecsOverrideEnvelope
-	if err := json.Unmarshal([]byte(s), &env); err != nil {
-		return nil, fmt.Errorf("input is not valid JSON: %w", err)
-	}
-	if len(env.ContainerOverrides) == 0 && env.TaskOverride == nil {
-		return nil, nil
-	}
-	to := &ecstypes.TaskOverride{}
-	for _, co := range env.ContainerOverrides {
-		c := ecstypes.ContainerOverride{
-			Name:              aws.String(co.Name),
-			Command:           co.Command,
-			Cpu:               co.Cpu,
-			Memory:            co.Memory,
-			MemoryReservation: co.MemoryReservation,
-		}
-		for _, e := range co.Environment {
-			c.Environment = append(c.Environment, ecstypes.KeyValuePair{
-				Name:  aws.String(e.Name),
-				Value: aws.String(e.Value),
-			})
-		}
-		to.ContainerOverrides = append(to.ContainerOverrides, c)
-	}
-	if env.TaskOverride != nil {
-		if env.TaskOverride.Cpu != "" {
-			to.Cpu = aws.String(env.TaskOverride.Cpu)
-		}
-		if env.TaskOverride.Memory != "" {
-			to.Memory = aws.String(env.TaskOverride.Memory)
-		}
-	}
-	return to, nil
-}
-
-// payloadFromInput renders a target.Input value as raw JSON bytes. Empty
-// input becomes "{}" so callers can pass it straight to AWS without an
-// extra nil check; canonicalization in jsonField guarantees valid JSON.
-func payloadFromInput(input jsonField) []byte {
-	s := strings.TrimSpace(string(input))
-	if s == "" {
-		return []byte("{}")
-	}
-	// Sanity-check: the field went through canonicalizeJSON on load, but if
-	// a caller hand-built a Target without that path we still want to bail
-	// rather than ship garbage to AWS.
-	var v json.RawMessage
-	if err := json.Unmarshal([]byte(s), &v); err != nil {
-		return []byte("{}")
-	}
-	return []byte(s)
-}
-
-// newRunClients builds the AWS service clients used by the run subcommand.
-// Real AWS wiring; tests skip this and construct runClients directly.
-func newRunClients(ctx context.Context, region string) (*runClients, error) {
-	awsCfg, err := loadAWS(ctx, region)
-	if err != nil {
-		return nil, err
-	}
-	return &runClients{
-		ECS:          ecs.NewFromConfig(awsCfg),
-		Lambda:       lambda.NewFromConfig(awsCfg),
-		SFN:          sfn.NewFromConfig(awsCfg),
-		Batch:        batch.NewFromConfig(awsCfg),
-		Glue:         glue.NewFromConfig(awsCfg),
-		CodeBuild:    codebuild.NewFromConfig(awsCfg),
-		CodePipeline: codepipeline.NewFromConfig(awsCfg),
-		SageMaker:    sagemaker.NewFromConfig(awsCfg),
-		RedshiftData: redshiftdata.NewFromConfig(awsCfg),
-	}, nil
-}
+// --- Tier A dispatch (job-runner targets) --------------------------------
 
 // arnTrailingPath returns the substring after the last `/` in arn. Useful
 // for ARNs of the form `arn:aws:<svc>:<region>:<account>:<type>/<name>`
@@ -483,15 +526,6 @@ func arnTrailingColon(arn string) string {
 		return arn[i+1:]
 	}
 	return arn
-}
-
-// arnLastSegment parses pipeline-style ARNs where the trailing segment is
-// the resource name with no separator before it (e.g.
-// `arn:aws:codepipeline:region:account:pipeline-name`). Equivalent to
-// arnTrailingColon for that shape; named distinctly for clarity at call
-// sites.
-func arnLastSegment(arn string) string {
-	return arnTrailingColon(arn)
 }
 
 // runBatchTarget calls batch:SubmitJob. The target ARN is the job-queue;
@@ -580,7 +614,9 @@ func runCodeBuildTarget(ctx context.Context, out io.Writer, cli codebuildStartAP
 // target ARN's trailing segment is the pipeline name
 // (`arn:aws:codepipeline:region:account:<pipeline-name>`).
 func runCodePipelineTarget(ctx context.Context, out io.Writer, cli codepipelineStartAPI, t *Target, dryRun bool) error {
-	pipeline := arnLastSegment(t.Arn)
+	// arn:aws:codepipeline:region:account:<pipeline-name> — pipeline
+	// name is the last colon-delimited segment.
+	pipeline := arnTrailingColon(t.Arn)
 	if dryRun {
 		fmt.Fprintf(out, "[dry-run] codepipeline:StartPipelineExecution pipeline=%s\n", pipeline)
 		return nil
@@ -686,52 +722,24 @@ func runRedshiftDataTarget(ctx context.Context, out io.Writer, cli redshiftDataA
 	return nil
 }
 
-// runRunSubcommand parses `ebschedule run -rule NAME [-dry-run]` and
-// dispatches the named rule. We honor both the global -dry-run (set on
-// the top-level flag.FlagSet) and a subcommand-local one for ecschedule
-// CLI compatibility — `ecschedule run -rule X -dry-run` should keep
-// working unchanged.
-func runRunSubcommand(ctx context.Context, out io.Writer, confPath string, globalDryRun bool, args []string) error {
-	fs := flag.NewFlagSet("run", flag.ContinueOnError)
-	fs.SetOutput(io.Discard) // surface our own usage on parse failure
-	var (
-		ruleName string
-		localDry bool
-	)
-	fs.StringVar(&ruleName, "rule", "", "rule name to run (required)")
-	fs.BoolVar(&localDry, "dry-run", false, "print what would be invoked without calling AWS")
-	if err := fs.Parse(args); err != nil {
-		return fmt.Errorf("run: %w", err)
-	}
-	if ruleName == "" {
-		return errors.New("run: -rule NAME is required")
-	}
-	dryRun := globalDryRun || localDry
+// --- AWS clients ---------------------------------------------------------
 
-	autoResolveAccountEnv(ctx)
-	cfgs, err := loadConfigs(confPath)
+// newRunClients builds the AWS service clients used by the run subcommand.
+// Real AWS wiring; tests skip this and construct runClients directly.
+func newRunClients(ctx context.Context, region string) (*runClients, error) {
+	awsCfg, err := loadAWS(ctx, region)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	cfg, rule, err := findRule(cfgs, ruleName)
-	if err != nil {
-		return err
-	}
-	if !dryRun {
-		// run only mutates AWS when not in dry-run, so mirror apply's
-		// pre-flight gate (catches expired SSO before we issue the call).
-		if err := preflightCheck(ctx, []*Config{cfg}); err != nil {
-			return fmt.Errorf("pre-flight: %w", err)
-		}
-	}
-	cli, err := newRunClients(ctx, cfg.Region)
-	if err != nil {
-		return fmt.Errorf("AWS clients: %w", err)
-	}
-	suffix := ""
-	if dryRun {
-		suffix = " (dry-run)"
-	}
-	fmt.Fprintf(out, "running rule %q%s\n", rule.Name, suffix)
-	return runRule(ctx, out, cli, rule, dryRun)
+	return &runClients{
+		ECS:          ecs.NewFromConfig(awsCfg),
+		Lambda:       lambda.NewFromConfig(awsCfg),
+		SFN:          sfn.NewFromConfig(awsCfg),
+		Batch:        batch.NewFromConfig(awsCfg),
+		Glue:         glue.NewFromConfig(awsCfg),
+		CodeBuild:    codebuild.NewFromConfig(awsCfg),
+		CodePipeline: codepipeline.NewFromConfig(awsCfg),
+		SageMaker:    sagemaker.NewFromConfig(awsCfg),
+		RedshiftData: redshiftdata.NewFromConfig(awsCfg),
+	}, nil
 }

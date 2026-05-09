@@ -14,10 +14,10 @@ import (
 	schtypes "github.com/aws/aws-sdk-go-v2/service/scheduler/types"
 )
 
-// schedAPI is the subset of *scheduler.Client that ebschedule actually uses.
-// Defining it here lets tests inject a fake. *scheduler.Client satisfies it
-// implicitly.
-type schedAPI interface {
+// schedulerAPI is the subset of *scheduler.Client that ebschedule actually
+// uses. Defining it here lets tests inject a fake; *scheduler.Client
+// satisfies it implicitly.
+type schedulerAPI interface {
 	ListSchedules(ctx context.Context, in *scheduler.ListSchedulesInput, optFns ...func(*scheduler.Options)) (*scheduler.ListSchedulesOutput, error)
 	GetSchedule(ctx context.Context, in *scheduler.GetScheduleInput, optFns ...func(*scheduler.Options)) (*scheduler.GetScheduleOutput, error)
 	ListScheduleGroups(ctx context.Context, in *scheduler.ListScheduleGroupsInput, optFns ...func(*scheduler.Options)) (*scheduler.ListScheduleGroupsOutput, error)
@@ -75,14 +75,14 @@ type ScheduleTarget struct {
 	Input                       jsonField                    `yaml:"input,omitempty"`
 	DeadLetterConfig            *DeadLetterConfig            `yaml:"deadLetterConfig,omitempty"`
 	RetryPolicy                 *RetryPolicy                 `yaml:"retryPolicy,omitempty"`
-	EcsParameters               *SchedEcsParameters          `yaml:"ecsParameters,omitempty"`
+	EcsParameters               *ScheduleEcsParameters       `yaml:"ecsParameters,omitempty"`
 	SqsParameters               *SqsParameters               `yaml:"sqsParameters,omitempty"`
-	KinesisParameters           *SchedKinesisParameters      `yaml:"kinesisParameters,omitempty"`
+	KinesisParameters           *ScheduleKinesisParameters   `yaml:"kinesisParameters,omitempty"`
 	SageMakerPipelineParameters *SageMakerPipelineParameters `yaml:"sageMakerPipelineParameters,omitempty"`
 	EventBridgeParameters       *EventBridgeParameters       `yaml:"eventBridgeParameters,omitempty"`
 }
 
-type SchedEcsParameters struct {
+type ScheduleEcsParameters struct {
 	TaskDefinitionArn        string                         `yaml:"taskDefinitionArn"`
 	TaskCount                int32                          `yaml:"taskCount,omitempty"`
 	LaunchType               string                         `yaml:"launchType,omitempty"`
@@ -101,9 +101,9 @@ type SchedEcsParameters struct {
 	Tags                     []KeyValuePair                 `yaml:"tags,omitempty"` // ECS task tags
 }
 
-// SchedKinesisParameters is the Scheduler shape: a literal partition key
-// (Rules use a JSON path instead).
-type SchedKinesisParameters struct {
+// ScheduleKinesisParameters is the Scheduler shape: a literal partition
+// key (Rules use a JSON path instead).
+type ScheduleKinesisParameters struct {
 	PartitionKey string `yaml:"partitionKey"`
 }
 
@@ -114,7 +114,7 @@ type EventBridgeParameters struct {
 
 // --- client ----------------------------------------------------------------
 
-func newSchedClient(ctx context.Context, region string) (*scheduler.Client, error) {
+func newSchedulerClient(ctx context.Context, region string) (*scheduler.Client, error) {
 	awsCfg, err := loadAWS(ctx, region)
 	if err != nil {
 		return nil, err
@@ -125,14 +125,14 @@ func newSchedClient(ctx context.Context, region string) (*scheduler.Client, erro
 // --- dump ------------------------------------------------------------------
 
 func dumpSchedules(ctx context.Context, region, group, prefix string) ([]*Schedule, error) {
-	cli, err := newSchedClient(ctx, region)
+	cli, err := newSchedulerClient(ctx, region)
 	if err != nil {
 		return nil, err
 	}
 	return dumpSchedulesWith(ctx, cli, group, prefix)
 }
 
-func dumpSchedulesWith(ctx context.Context, cli schedAPI, group, prefix string) ([]*Schedule, error) {
+func dumpSchedulesWith(ctx context.Context, cli schedulerAPI, group, prefix string) ([]*Schedule, error) {
 	var out []*Schedule
 	var token *string
 	for {
@@ -185,7 +185,7 @@ func fromRemoteSchedule(s *scheduler.GetScheduleOutput) *Schedule {
 		}
 	}
 	if s.Target != nil {
-		out.Target = fromRemoteSchedTarget(s.Target)
+		out.Target = fromRemoteScheduleTarget(s.Target)
 	}
 	return canonicalizeSchedule(out)
 }
@@ -202,6 +202,15 @@ func fromRemoteSchedule(s *scheduler.GetScheduleOutput) *Schedule {
 // Called on both sides of `diff` so that explicit user-written defaults still
 // match a stripped remote view. Non-destructive: the caller's *Schedule and
 // nested *ScheduleTarget are never mutated.
+
+// schedDefaultMaximum* mirror the documented Scheduler defaults so the
+// strip-on-both-sides logic in canonicalizeSchedule has a single source
+// of truth.
+const (
+	schedDefaultMaximumRetryAttempts     = 185
+	schedDefaultMaximumEventAgeInSeconds = 86400
+)
+
 func canonicalizeSchedule(s *Schedule) *Schedule {
 	if s == nil {
 		return nil
@@ -223,7 +232,7 @@ func canonicalizeSchedule(s *Schedule) *Schedule {
 	return &out
 }
 
-func fromRemoteSchedTarget(t *schtypes.Target) *ScheduleTarget {
+func fromRemoteScheduleTarget(t *schtypes.Target) *ScheduleTarget {
 	st := &ScheduleTarget{
 		Arn:     aws.ToString(t.Arn),
 		RoleArn: aws.ToString(t.RoleArn),
@@ -239,7 +248,7 @@ func fromRemoteSchedTarget(t *schtypes.Target) *ScheduleTarget {
 		}
 	}
 	if t.EcsParameters != nil {
-		ep := &SchedEcsParameters{
+		ep := &ScheduleEcsParameters{
 			TaskDefinitionArn:    aws.ToString(t.EcsParameters.TaskDefinitionArn),
 			TaskCount:            aws.ToInt32(t.EcsParameters.TaskCount),
 			LaunchType:           string(t.EcsParameters.LaunchType),
@@ -285,7 +294,7 @@ func fromRemoteSchedTarget(t *schtypes.Target) *ScheduleTarget {
 		st.SqsParameters = &SqsParameters{MessageGroupId: aws.ToString(t.SqsParameters.MessageGroupId)}
 	}
 	if t.KinesisParameters != nil {
-		st.KinesisParameters = &SchedKinesisParameters{
+		st.KinesisParameters = &ScheduleKinesisParameters{
 			PartitionKey: aws.ToString(t.KinesisParameters.PartitionKey),
 		}
 	}
@@ -374,14 +383,14 @@ func diffSchedules(ctx context.Context, out io.Writer, cfg *Config) (bool, error
 // --- apply -----------------------------------------------------------------
 
 func applySchedules(ctx context.Context, out io.Writer, cfg *Config, dryRun, prune bool) error {
-	cli, err := newSchedClient(ctx, cfg.Region)
+	cli, err := newSchedulerClient(ctx, cfg.Region)
 	if err != nil {
 		return err
 	}
 	return applySchedulesWith(ctx, out, cli, cfg, dryRun, prune)
 }
 
-func applySchedulesWith(ctx context.Context, out io.Writer, cli schedAPI, cfg *Config, dryRun, prune bool) error {
+func applySchedulesWith(ctx context.Context, out io.Writer, cli schedulerAPI, cfg *Config, dryRun, prune bool) error {
 	byGroup := schedulesByGroup(cfg)
 
 	for _, g := range sortedGroups(byGroup) {
@@ -444,7 +453,7 @@ func applySchedulesWith(ctx context.Context, out io.Writer, cli schedAPI, cfg *C
 // GetScheduleGroup, because GetScheduleGroup returns a nil Arn for the
 // special "default" group. ListScheduleGroups consistently returns ARNs
 // for all groups including "default".
-func listTrackedGroups(ctx context.Context, cli schedAPI, trackingID string) ([]string, error) {
+func listTrackedGroups(ctx context.Context, cli schedulerAPI, trackingID string) ([]string, error) {
 	var token *string
 	var out []string
 	for {
@@ -483,7 +492,7 @@ func listTrackedGroups(ctx context.Context, cli schedAPI, trackingID string) ([]
 // doesn't already exist. The "default" group always exists and is skipped.
 // Existing groups are left untouched (we don't reconcile their tags) to avoid
 // surprising side effects on groups shared with other tools.
-func ensureScheduleGroup(ctx context.Context, out io.Writer, cli schedAPI, group string, cfg *Config, dryRun bool) error {
+func ensureScheduleGroup(ctx context.Context, out io.Writer, cli schedulerAPI, group string, cfg *Config, dryRun bool) error {
 	if group == "default" {
 		return nil
 	}
@@ -518,7 +527,7 @@ func ensureScheduleGroup(ctx context.Context, out io.Writer, cli schedAPI, group
 	return err
 }
 
-func applyOneSchedule(ctx context.Context, out io.Writer, cli schedAPI, group string, s *Schedule, dryRun bool) error {
+func applyOneSchedule(ctx context.Context, out io.Writer, cli schedulerAPI, group string, s *Schedule, dryRun bool) error {
 	got, err := cli.GetSchedule(ctx, &scheduler.GetScheduleInput{
 		GroupName: aws.String(group), Name: aws.String(s.Name),
 	})

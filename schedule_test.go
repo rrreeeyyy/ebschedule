@@ -21,7 +21,7 @@ func fullScheduleTarget() *ScheduleTarget {
 			MaximumRetryAttempts:     2,
 			MaximumEventAgeInSeconds: 600,
 		},
-		EcsParameters: &SchedEcsParameters{
+		EcsParameters: &ScheduleEcsParameters{
 			TaskDefinitionArn: "arn:aws:ecs:us-east-1:1:task-definition/x:1",
 			TaskCount:         1,
 			LaunchType:        "",
@@ -50,7 +50,7 @@ func fullScheduleTarget() *ScheduleTarget {
 		SqsParameters: &SqsParameters{
 			MessageGroupId: "g1",
 		},
-		KinesisParameters: &SchedKinesisParameters{
+		KinesisParameters: &ScheduleKinesisParameters{
 			PartitionKey: "literal-key",
 		},
 		SageMakerPipelineParameters: &SageMakerPipelineParameters{
@@ -71,7 +71,7 @@ func TestSchedTarget_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := fromRemoteSchedTarget(at)
+	got := fromRemoteScheduleTarget(at)
 	if !reflect.DeepEqual(got, src) {
 		t.Errorf("round-trip mismatch\n got: %+v\nwant: %+v", got, src)
 	}
@@ -86,7 +86,7 @@ func TestSchedTarget_MinimalRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := fromRemoteSchedTarget(at)
+	got := fromRemoteScheduleTarget(at)
 	if !reflect.DeepEqual(got, src) {
 		t.Errorf("minimal round-trip\n got: %+v\nwant: %+v", got, src)
 	}
@@ -102,7 +102,7 @@ func TestToAWSSchedTarget_EcsNetworkConfigOnlyWhenSubnets(t *testing.T) {
 	t.Run("no subnets -> no network config", func(t *testing.T) {
 		at, err := toAWSSchedTarget(&ScheduleTarget{
 			Arn: "arn:...", RoleArn: "arn:...",
-			EcsParameters: &SchedEcsParameters{
+			EcsParameters: &ScheduleEcsParameters{
 				TaskDefinitionArn: "arn:...:task-definition/x",
 				LaunchType:        "FARGATE",
 			},
@@ -117,7 +117,7 @@ func TestToAWSSchedTarget_EcsNetworkConfigOnlyWhenSubnets(t *testing.T) {
 	t.Run("with subnets -> attached", func(t *testing.T) {
 		at, err := toAWSSchedTarget(&ScheduleTarget{
 			Arn: "arn:...", RoleArn: "arn:...",
-			EcsParameters: &SchedEcsParameters{
+			EcsParameters: &ScheduleEcsParameters{
 				TaskDefinitionArn: "arn:...:task-definition/x",
 				Subnets:           []string{"s-1"},
 				AssignPublicIp:    "ENABLED",

@@ -39,12 +39,6 @@ type ecsPlugin struct {
 	Config map[string]any `yaml:"config,omitempty"`
 }
 
-// defaultECSEventsRole matches ecschedule's `defaultRole` constant.
-// When neither the per-target role nor the top-level role is set, the
-// importer falls back here so an imported config still has a roleArn
-// to apply against — same chain ecschedule applies at runtime.
-const defaultECSEventsRole = "ecsEventsRole"
-
 type ecsRule struct {
 	Name               string     `yaml:"name"`
 	Description        string     `yaml:"description,omitempty"`
@@ -106,6 +100,12 @@ type ecsEnvVar struct {
 	Name  string `yaml:"name"`
 	Value string `yaml:"value"`
 }
+
+// defaultECSEventsRole matches ecschedule's `defaultRole` constant.
+// When neither the per-target role nor the top-level role is set, the
+// importer falls back here so an imported config still has a roleArn
+// to apply against — same chain ecschedule applies at runtime.
+const defaultECSEventsRole = "ecsEventsRole"
 
 // --- entrypoint ------------------------------------------------------------
 
