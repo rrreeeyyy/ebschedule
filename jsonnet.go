@@ -52,9 +52,9 @@ func evalJsonnet(path string, raw []byte, offline bool) ([]byte, error) {
 		}
 	} else {
 		vm.NativeFunction(jsonnetMustEnvFunc())
-		helper := newSSMHelper(ctx)
-		vm.NativeFunction(jsonnetSsmFunc(helper))
-		vm.NativeFunction(jsonnetSsmListFunc(helper))
+		helper := newSSMHelper()
+		vm.NativeFunction(jsonnetSsmFunc(ctx, helper))
+		vm.NativeFunction(jsonnetSsmListFunc(ctx, helper))
 		for _, f := range jsonnetTfstateFuncs(ctx) {
 			vm.NativeFunction(f)
 		}
@@ -67,6 +67,8 @@ func evalJsonnet(path string, raw []byte, offline bool) ([]byte, error) {
 	}
 	return []byte(json), nil
 }
+
+// --- online natives -------------------------------------------------------
 
 // jsonnetEnvFunc registers `env(name, default)`: returns the value of the
 // named env var, or `default` when unset.
@@ -111,7 +113,7 @@ func jsonnetMustEnvFunc() *jsonnet.NativeFunction {
 // decrypted; mirrors the {{ ssm "/path" }} template func. Shares the
 // per-VM cache with `ssmList` so multiple references to the same key
 // only hit AWS once.
-func jsonnetSsmFunc(h *ssmHelper) *jsonnet.NativeFunction {
+func jsonnetSsmFunc(ctx context.Context, h *ssmHelper) *jsonnet.NativeFunction {
 	return &jsonnet.NativeFunction{
 		Name:   "ssm",
 		Params: []ast.Identifier{"name"},
@@ -120,7 +122,7 @@ func jsonnetSsmFunc(h *ssmHelper) *jsonnet.NativeFunction {
 			if !ok || name == "" {
 				return nil, fmt.Errorf("ssm: name must be a non-empty string")
 			}
-			return h.get(name)
+			return h.get(ctx, name)
 		},
 	}
 }
@@ -130,7 +132,7 @@ func jsonnetSsmFunc(h *ssmHelper) *jsonnet.NativeFunction {
 // against a CSV string; for one-off element access write
 // `std.native('ssmList')(name)[idx]`. A non-StringList parameter comes
 // back as a one-element array, which keeps caller iteration uniform.
-func jsonnetSsmListFunc(h *ssmHelper) *jsonnet.NativeFunction {
+func jsonnetSsmListFunc(ctx context.Context, h *ssmHelper) *jsonnet.NativeFunction {
 	return &jsonnet.NativeFunction{
 		Name:   "ssmList",
 		Params: []ast.Identifier{"name"},
@@ -139,7 +141,7 @@ func jsonnetSsmListFunc(h *ssmHelper) *jsonnet.NativeFunction {
 			if !ok || name == "" {
 				return nil, fmt.Errorf("ssmList: name must be a non-empty string")
 			}
-			parts, err := h.list(name)
+			parts, err := h.list(ctx, name)
 			if err != nil {
 				return nil, err
 			}
@@ -177,6 +179,10 @@ func jsonnetTfstateFuncs(ctx context.Context) []*jsonnet.NativeFunction {
 	return funcs
 }
 
+// tfstateStub backs jsonnetTfstateFuncs when EBSCHEDULE_TFSTATE_URL is
+// unset: registers the function name so jsonnet's compile-time native
+// resolution succeeds, but errors at call time with a message naming
+// the missing env var.
 func tfstateStub(name string, params []ast.Identifier) *jsonnet.NativeFunction {
 	return &jsonnet.NativeFunction{
 		Name:   name,
@@ -186,6 +192,14 @@ func tfstateStub(name string, params []ast.Identifier) *jsonnet.NativeFunction {
 		},
 	}
 }
+
+// --- offline natives ------------------------------------------------------
+//
+// Same shape as the online set above, but each returns a placeholder
+// instead of hitting AWS / state files. validateFuncs() / loadConfigs
+// pass `offline=true` to evalJsonnet, which switches to this set so a
+// jsonnet config that references must_env / ssm / tfstate validates
+// without exporting env vars or having credentials.
 
 // jsonnetMustEnvFuncOffline mirrors the validateFuncs() behavior on the
 // jsonnet side: instead of erroring when an env var is missing, return a
@@ -210,6 +224,22 @@ func jsonnetMustEnvFuncOffline() *jsonnet.NativeFunction {
 	}
 }
 
+// jsonnetSsmFuncOffline returns `<ssm:/path>` instead of hitting AWS, so
+// validate can sanity-check structure without credentials.
+func jsonnetSsmFuncOffline() *jsonnet.NativeFunction {
+	return &jsonnet.NativeFunction{
+		Name:   "ssm",
+		Params: []ast.Identifier{"name"},
+		Func: func(args []any) (any, error) {
+			name, ok := args[0].(string)
+			if !ok || name == "" {
+				return nil, fmt.Errorf("ssm: name must be a non-empty string")
+			}
+			return "<ssm:" + name + ">", nil
+		},
+	}
+}
+
 // jsonnetSsmListFuncOffline returns a one-element array containing the
 // `<ssm:/path>` placeholder, so configs that drive subnet / security
 // group lists from StringList parameters still validate without hitting
@@ -225,22 +255,6 @@ func jsonnetSsmListFuncOffline() *jsonnet.NativeFunction {
 				return nil, fmt.Errorf("ssmList: name must be a non-empty string")
 			}
 			return []any{"<ssm:" + name + ">"}, nil
-		},
-	}
-}
-
-// jsonnetSsmFuncOffline returns `<ssm:/path>` instead of hitting AWS, so
-// validate can sanity-check structure without credentials.
-func jsonnetSsmFuncOffline() *jsonnet.NativeFunction {
-	return &jsonnet.NativeFunction{
-		Name:   "ssm",
-		Params: []ast.Identifier{"name"},
-		Func: func(args []any) (any, error) {
-			name, ok := args[0].(string)
-			if !ok || name == "" {
-				return nil, fmt.Errorf("ssm: name must be a non-empty string")
-			}
-			return "<ssm:" + name + ">", nil
 		},
 	}
 }

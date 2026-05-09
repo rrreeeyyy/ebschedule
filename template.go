@@ -28,31 +28,30 @@ const envTfstateURL = "EBSCHEDULE_TFSTATE_URL"
 // multiple template / jsonnet sites. Mirrors the cache fujiwara/ssm-lookup
 // uses for ecschedule's plugin path.
 type ssmHelper struct {
-	ctx    context.Context
 	client *ssm.Client
 	cache  map[string]string
 }
 
-func newSSMHelper(ctx context.Context) *ssmHelper {
-	return &ssmHelper{ctx: ctx, cache: map[string]string{}}
+func newSSMHelper() *ssmHelper {
+	return &ssmHelper{cache: map[string]string{}}
 }
 
 // get returns the raw Parameter.Value for name (decrypted), caching by
 // name. The Type is not inspected — both String and StringList come back
 // as the SDK's stringly value, with comma separators preserved for the
 // caller to split.
-func (h *ssmHelper) get(name string) (string, error) {
+func (h *ssmHelper) get(ctx context.Context, name string) (string, error) {
 	if v, ok := h.cache[name]; ok {
 		return v, nil
 	}
 	if h.client == nil {
-		cfg, err := awsconfig.LoadDefaultConfig(h.ctx)
+		cfg, err := awsconfig.LoadDefaultConfig(ctx)
 		if err != nil {
 			return "", err
 		}
 		h.client = ssm.NewFromConfig(cfg)
 	}
-	out, err := h.client.GetParameter(h.ctx, &ssm.GetParameterInput{
+	out, err := h.client.GetParameter(ctx, &ssm.GetParameterInput{
 		Name: aws.String(name), WithDecryption: aws.Bool(true),
 	})
 	if err != nil {
@@ -67,8 +66,8 @@ func (h *ssmHelper) get(name string) (string, error) {
 // comma — the SSM StringList separator. A non-StringList value comes
 // back as a single-element slice, which keeps the caller's iteration /
 // indexing code uniform.
-func (h *ssmHelper) list(name string) ([]string, error) {
-	v, err := h.get(name)
+func (h *ssmHelper) list(ctx context.Context, name string) ([]string, error) {
+	v, err := h.get(ctx, name)
 	if err != nil {
 		return nil, err
 	}
@@ -80,13 +79,14 @@ func (h *ssmHelper) list(name string) ([]string, error) {
 // that owns its own lazily-constructed *ssm.Client, so test runs don't share
 // state and there's no package-level singleton.
 func runtimeFuncs() template.FuncMap {
-	helper := newSSMHelper(context.Background())
+	helper := newSSMHelper()
+	ctx := context.Background()
 	// ssm matches ecschedule's signature: `{{ ssm "key" }}` returns the raw
 	// value (CSV for StringList), `{{ ssm "key" idx }}` returns the idx-th
 	// element of the StringList. Out-of-range indices error loudly with
 	// the parameter name + observed length.
 	ssmFn := func(name string, index ...int) (string, error) {
-		v, err := helper.get(name)
+		v, err := helper.get(ctx, name)
 		if err != nil {
 			return "", err
 		}

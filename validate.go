@@ -46,13 +46,6 @@ func validateScheduleExpression(expr string) error {
 	return nil
 }
 
-// Documented Scheduler defaults; canonicalizeSchedule drops user-side values
-// that match these so diff stays whitespace-and-default-insensitive.
-const (
-	schedDefaultMaximumRetryAttempts     = 185
-	schedDefaultMaximumEventAgeInSeconds = 86400
-)
-
 // runValidate runs offline validation across all loaded configs and exits
 // non-zero if any errors were found. It prints every problem rather than
 // stopping at the first.
@@ -315,7 +308,7 @@ func looksLikeArnOrPlaceholder(s string) bool {
 }
 
 // validateEcsCommon covers the fields shared between RuleEcsParameters
-// and SchedEcsParameters. Both have the same enum constraints and the
+// and ScheduleEcsParameters. Both have the same enum constraints and the
 // same launchType / capacityProviderStrategy mutual-exclusion rule.
 func validateEcsCommon(
 	taskDefinitionArn, launchType, assignPublicIp string,

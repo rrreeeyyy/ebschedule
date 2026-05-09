@@ -279,7 +279,7 @@ func TestValidateRule_Targets(t *testing.T) {
 func TestValidateSchedule_NewTargetParameters(t *testing.T) {
 	t.Run("kinesis missing partitionKey", func(t *testing.T) {
 		s := validSchedule()
-		s.Target.KinesisParameters = &SchedKinesisParameters{}
+		s.Target.KinesisParameters = &ScheduleKinesisParameters{}
 		wantSubstr(t, validateSchedule(s, "schedule[0]:x"), "kinesisParameters.partitionKey")
 	})
 	t.Run("sagemaker pipeline param missing name", func(t *testing.T) {
@@ -371,7 +371,7 @@ func TestValidateSchedule(t *testing.T) {
 	})
 	t.Run("target ecs invalid launch type", func(t *testing.T) {
 		s := validSchedule()
-		s.Target.EcsParameters = &SchedEcsParameters{
+		s.Target.EcsParameters = &ScheduleEcsParameters{
 			TaskDefinitionArn: "arn:aws:ecs:us-east-1:1:task-definition/x:1",
 			LaunchType:        "SERVERLESS",
 		}
